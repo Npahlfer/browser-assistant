@@ -109,6 +109,20 @@
       </div>
     </div>
 
+    <!-- File Chip -->
+    <div id="file-chip" class="file-chip hidden">
+      <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5">
+        <path d="M7 1H3a1 1 0 0 0-1 1v8a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1V4L7 1z"/>
+        <path d="M7 1v3h3"/>
+      </svg>
+      <span id="file-chip-name"></span>
+      <button id="file-chip-remove" title="Remove file">
+        <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.5">
+          <path d="M1 1l8 8M9 1L1 9"/>
+        </svg>
+      </button>
+    </div>
+
     <!-- Bottom Controls -->
     <div class="bottom-controls">
       <!-- Action Buttons -->
@@ -135,6 +149,12 @@
         </div>
         <div class="input-actions">
           <div class="input-actions-left">
+            <button id="attach-btn" class="tool-btn" title="Attach a local file">
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
+                <path d="M13.5 8.5l-6 6a4 4 0 0 1-5.6-5.6l6.5-6.5a2.5 2.5 0 0 1 3.5 3.5l-6.5 6.5a1 1 0 0 1-1.4-1.4l6-6"/>
+              </svg>
+            </button>
+            <input type="file" id="file-input" accept=".txt,.md,.json,.csv,.js,.ts,.py,.html,.css,.xml,.yaml,.yml,.sh,.rs,.go,.java,.c,.cpp,.h" style="display:none">
             <button id="search-send-btn" class="tool-btn" title="Search web and send">
               <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
                 <circle cx="6.5" cy="6.5" r="4"/>

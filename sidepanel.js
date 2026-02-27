@@ -30,6 +30,7 @@ let cachedScreenshot = null; // { base64, tabId, url }
 let apiKeys = {}; // { openai: "sk-...", claude: "sk-..." }
 let savedModels = {}; // { ollama: "llama3", openai: "gpt-4o", ... }
 let braveApiKey = '';
+let loadedFile = null; // { name, content }
 
 // DOM elements
 const settingsBtn = document.getElementById('settings-btn');
@@ -55,6 +56,11 @@ const userInput = document.getElementById('user-input');
 const sendBtn = document.getElementById('send-btn');
 const searchSendBtn = document.getElementById('search-send-btn');
 const screenshotSendBtn = document.getElementById('screenshot-send-btn');
+const attachBtn = document.getElementById('attach-btn');
+const fileInput = document.getElementById('file-input');
+const fileChip = document.getElementById('file-chip');
+const fileChipName = document.getElementById('file-chip-name');
+const fileChipRemove = document.getElementById('file-chip-remove');
 
 // --- Markdown Renderer ---
 
@@ -458,11 +464,18 @@ async function getScreenshotBase64(forceNew = false) {
 
 function buildSystemMessage(pageData) {
   const template = systemPromptInput.value.trim() || DEFAULT_SYSTEM_PROMPT;
-  return template
+  let result = template
     .replace(/\{title\}/g, pageData.title)
     .replace(/\{url\}/g, pageData.url)
     .replace(/\{description\}/g, pageData.metaDescription || '')
     .replace(/\{content\}/g, pageData.content);
+
+  // Append loaded file context
+  if (loadedFile) {
+    result += `\n\n[Attached File: ${loadedFile.name}]\n${loadedFile.content}\n[End of Attached File]`;
+  }
+
+  return result;
 }
 
 async function streamChat(userMessage, screenshotBase64 = null) {
@@ -719,6 +732,34 @@ async function handleSend(forceNewScreenshot = false, includeSearch = false) {
   await streamChat(messageText, screenshotBase64);
 }
 
+// --- File Attachment ---
+
+function handleAttachFile() {
+  fileInput.click();
+}
+
+function handleFileSelected(e) {
+  const file = e.target.files[0];
+  if (!file) return;
+  fileInput.value = ''; // Reset so same file can be re-selected
+
+  const reader = new FileReader();
+  reader.onload = (ev) => {
+    const content = ev.target.result;
+    loadedFile = { name: file.name, content };
+    fileChipName.textContent = file.name;
+    fileChip.classList.remove('hidden');
+  };
+  reader.onerror = () => showBanner('Failed to read file.', 'error');
+  reader.readAsText(file);
+}
+
+function removeFile() {
+  loadedFile = null;
+  fileChip.classList.add('hidden');
+  fileChipName.textContent = '';
+}
+
 // --- Event Listeners ---
 
 settingsBtn.addEventListener('click', toggleSettings);
@@ -758,6 +799,10 @@ braveKeyInput.addEventListener('change', () => {
   braveApiKey = braveKeyInput.value.trim();
   saveSettings();
 });
+
+attachBtn.addEventListener('click', handleAttachFile);
+fileInput.addEventListener('change', handleFileSelected);
+fileChipRemove.addEventListener('click', removeFile);
 
 summarizeBtn.addEventListener('click', handleSummarize);
 askBtn.addEventListener('click', handleAsk);
