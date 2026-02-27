@@ -70,6 +70,19 @@
       </label>
     </div>
 
+    <div class="settings-section-title">Web Search</div>
+    <div class="settings-group">
+      <label for="search-provider-select">Search Provider</label>
+      <select id="search-provider-select">
+        <option value="duckduckgo">DuckDuckGo (free, no key)</option>
+        <option value="brave">Brave Search (API key required)</option>
+      </select>
+    </div>
+    <div class="settings-group brave-key-group hidden">
+      <label for="brave-key-input">Brave API Key</label>
+      <input type="password" id="brave-key-input" placeholder="BSA...">
+    </div>
+
     <div class="settings-section-title">Prompt</div>
     <div class="settings-group">
       <label for="system-prompt-input">System Prompt</label>
@@ -122,6 +135,12 @@
         </div>
         <div class="input-actions">
           <div class="input-actions-left">
+            <button id="search-send-btn" class="tool-btn" title="Search web and send">
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
+                <circle cx="6.5" cy="6.5" r="4"/>
+                <path d="M11 11l3 3"/>
+              </svg>
+            </button>
             <button id="screenshot-send-btn" class="tool-btn" title="Send with new screenshot">
               <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
                 <rect x="1" y="2.5" width="14" height="11" rx="2"/>

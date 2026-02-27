@@ -29,6 +29,7 @@ let currentPort = null;
 let cachedScreenshot = null; // { base64, tabId, url }
 let apiKeys = {}; // { openai: "sk-...", claude: "sk-..." }
 let savedModels = {}; // { ollama: "llama3", openai: "gpt-4o", ... }
+let braveApiKey = '';
 
 // DOM elements
 const settingsBtn = document.getElementById('settings-btn');
@@ -41,6 +42,9 @@ const modelSelect = document.getElementById('model-select');
 const refreshModelsBtn = document.getElementById('refresh-models-btn');
 const screenshotToggle = document.getElementById('screenshot-toggle');
 const systemPromptInput = document.getElementById('system-prompt-input');
+const searchProviderSelect = document.getElementById('search-provider-select');
+const braveKeyInput = document.getElementById('brave-key-input');
+const braveKeyGroup = document.querySelector('.brave-key-group');
 const summarizeBtn = document.getElementById('summarize-btn');
 const askBtn = document.getElementById('ask-btn');
 const statusBanner = document.getElementById('status-banner');
@@ -49,6 +53,7 @@ const welcomeState = document.getElementById('welcome-state');
 const inputArea = document.getElementById('input-area');
 const userInput = document.getElementById('user-input');
 const sendBtn = document.getElementById('send-btn');
+const searchSendBtn = document.getElementById('search-send-btn');
 const screenshotSendBtn = document.getElementById('screenshot-send-btn');
 
 // --- Markdown Renderer ---
@@ -205,12 +210,23 @@ function updateProviderUI() {
   });
 }
 
+function updateSearchProviderUI() {
+  const provider = searchProviderSelect.value;
+  if (provider === 'brave') {
+    braveKeyGroup.classList.remove('hidden');
+    braveKeyInput.value = braveApiKey;
+  } else {
+    braveKeyGroup.classList.add('hidden');
+  }
+}
+
 function getSettings() {
   const provider = providerSelect.value;
   if (CLOUD_PROVIDERS.includes(provider) && apikeyInput.value.trim()) {
     apiKeys[provider] = apikeyInput.value.trim();
   }
   if (modelSelect.value) savedModels[provider] = modelSelect.value;
+  if (braveKeyInput.value.trim()) braveApiKey = braveKeyInput.value.trim();
   return {
     provider,
     endpoint: endpointInput.value.replace(/\/+$/, ''),
@@ -219,7 +235,9 @@ function getSettings() {
     model: modelSelect.value,
     savedModels: { ...savedModels },
     includeScreenshot: screenshotToggle.checked,
-    systemPrompt: systemPromptInput.value
+    systemPrompt: systemPromptInput.value,
+    searchProvider: searchProviderSelect.value,
+    braveApiKey
   };
 }
 
@@ -247,6 +265,12 @@ async function loadSettings() {
         apiKeyGroup.classList.add('hidden');
         endpointInput.disabled = false;
       }
+      if (s.searchProvider) searchProviderSelect.value = s.searchProvider;
+      if (s.braveApiKey) {
+        braveApiKey = s.braveApiKey;
+        braveKeyInput.value = braveApiKey;
+      }
+      updateSearchProviderUI();
       await fetchModels();
       if (savedModels[provider]) modelSelect.value = savedModels[provider];
     }
@@ -371,6 +395,7 @@ function setStreaming(streaming) {
   summarizeBtn.disabled = streaming;
   askBtn.disabled = streaming;
   sendBtn.disabled = streaming;
+  searchSendBtn.disabled = streaming;
   screenshotSendBtn.disabled = streaming;
 }
 
@@ -520,6 +545,35 @@ async function streamChat(userMessage, screenshotBase64 = null) {
   });
 }
 
+// --- Web Search ---
+
+async function performSearch(query) {
+  const settings = getSettings();
+  try {
+    const resp = await chrome.runtime.sendMessage({
+      type: 'WEB_SEARCH',
+      query,
+      provider: settings.searchProvider || 'duckduckgo',
+      apiKey: braveApiKey
+    });
+    if (resp.error) throw new Error(resp.error);
+    return resp.results;
+  } catch (e) {
+    console.error('Search failed:', e);
+    return null;
+  }
+}
+
+function formatSearchResults(results) {
+  if (!results || !results.results || results.results.length === 0) return '';
+  const header = `[Web Search via ${results.provider} for: "${results.query}"]`;
+  const body = results.results
+    .slice(0, 5)
+    .map((r, i) => `${i + 1}. **${r.title}**\n   ${r.url}\n   ${r.description || ''}`)
+    .join('\n\n');
+  return `${header}\n\n${body}\n\n[End of Search Results]`;
+}
+
 // --- Actions ---
 
 async function handleSummarize() {
@@ -567,7 +621,7 @@ async function handleAsk() {
   setMode('ask');
 }
 
-async function handleSend(forceNewScreenshot = false) {
+async function handleSend(forceNewScreenshot = false, includeSearch = false) {
   const text = userInput.value.trim();
   if (!text || isStreaming) return;
 
@@ -575,8 +629,23 @@ async function handleSend(forceNewScreenshot = false) {
   userInput.style.height = 'auto';
   addMessage('user', text);
 
+  let messageText = text;
+
+  if (includeSearch) {
+    const searchLoadingMsg = addLoadingMessage('Searching the web');
+    const searchResults = await performSearch(text);
+    searchLoadingMsg.remove();
+
+    const formatted = formatSearchResults(searchResults);
+    if (formatted) {
+      messageText = `${text}\n\n${formatted}`;
+    } else {
+      showBanner('Web search returned no results.', 'warning');
+    }
+  }
+
   const screenshotBase64 = await getScreenshotBase64(forceNewScreenshot);
-  await streamChat(text, screenshotBase64);
+  await streamChat(messageText, screenshotBase64);
 }
 
 // --- Event Listeners ---
@@ -609,10 +678,21 @@ systemPromptInput.addEventListener('change', saveSettings);
 
 refreshModelsBtn.addEventListener('click', fetchModels);
 
+searchProviderSelect.addEventListener('change', () => {
+  updateSearchProviderUI();
+  saveSettings();
+});
+
+braveKeyInput.addEventListener('change', () => {
+  braveApiKey = braveKeyInput.value.trim();
+  saveSettings();
+});
+
 summarizeBtn.addEventListener('click', handleSummarize);
 askBtn.addEventListener('click', handleAsk);
-sendBtn.addEventListener('click', () => handleSend(false));
-screenshotSendBtn.addEventListener('click', () => handleSend(true));
+sendBtn.addEventListener('click', () => handleSend(false, false));
+searchSendBtn.addEventListener('click', () => handleSend(false, true));
+screenshotSendBtn.addEventListener('click', () => handleSend(true, false));
 
 userInput.addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && !e.shiftKey) {
