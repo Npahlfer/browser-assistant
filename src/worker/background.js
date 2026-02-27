@@ -1,4 +1,5 @@
-// Background service worker: screenshot capture, LLM streaming, message relay
+import { streamOllama, streamOpenAICompat, streamClaude } from './llm.js';
+import { webSearch } from './search.js';
 
 // Open side panel on extension icon click
 chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true });
@@ -96,9 +97,9 @@ async function captureScreenshot() {
 function isRestrictedPageError(e) {
   const msg = e?.message || '';
   return msg.includes('cannot be scripted') ||
-         msg.includes('Cannot access') ||
-         msg.includes('chrome-extension://') ||
-         msg.includes('extensions gallery');
+    msg.includes('Cannot access') ||
+    msg.includes('chrome-extension://') ||
+    msg.includes('extensions gallery');
 }
 
 function isPDFUrl(url) {
@@ -114,7 +115,7 @@ async function extractPageText(tabId) {
   let tab;
   try {
     tab = await chrome.tabs.get(tabId);
-  } catch (_) {}
+  } catch (_) { }
 
   const url = tab?.url || '';
 
@@ -315,274 +316,8 @@ chrome.runtime.onConnect.addListener((port) => {
       if (!disconnected) {
         try {
           port.postMessage({ type: 'ERROR', error: err.message || 'Stream failed' });
-        } catch (_) {}
+        } catch (_) { }
       }
     });
   });
 });
-
-// --- Ollama Streaming (NDJSON) ---
-
-async function streamOllama(port, endpoint, model, messages) {
-  const ollamaMessages = messages.map(m => {
-    const msg = { role: m.role, content: m.content };
-    if (m.image) {
-      msg.images = [m.image];
-    }
-    return msg;
-  });
-
-  const resp = await fetch(`${endpoint}/api/chat`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ model, messages: ollamaMessages, stream: true })
-  });
-
-  if (!resp.ok) {
-    const text = await resp.text().catch(() => '');
-    throw new Error(`Ollama error ${resp.status}: ${text || 'Server unreachable'}`);
-  }
-
-  const reader = resp.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = '';
-
-  const processLine = (line) => {
-    line = line.replace(/\r$/, '').trim();
-    if (!line) return false;
-    let data;
-    try {
-      data = JSON.parse(line);
-    } catch (e) {
-      return false; // Skip malformed JSON
-    }
-    if (data.error) {
-      throw new Error(data.error);
-    }
-    if (data.message?.content) {
-      port.postMessage({ type: 'TOKEN', token: data.message.content });
-    }
-    return !!data.done;
-  };
-
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-
-    buffer += decoder.decode(value, { stream: true });
-    const lines = buffer.split('\n');
-    buffer = lines.pop();
-
-    for (const line of lines) {
-      if (processLine(line)) {
-        port.postMessage({ type: 'DONE' });
-        return;
-      }
-    }
-  }
-
-  // Process any remaining data in the buffer
-  if (buffer.trim()) {
-    processLine(buffer);
-  }
-
-  port.postMessage({ type: 'DONE' });
-}
-
-// --- OpenAI-compatible Streaming (SSE) — LM Studio & OpenAI ---
-
-async function streamOpenAICompat(port, endpoint, apiKey, model, messages) {
-  const openaiMessages = messages.map(m => {
-    if (m.image) {
-      return {
-        role: m.role,
-        content: [
-          { type: 'text', text: m.content },
-          { type: 'image_url', image_url: { url: `data:image/png;base64,${m.image}` } }
-        ]
-      };
-    }
-    return { role: m.role, content: m.content };
-  });
-
-  const headers = { 'Content-Type': 'application/json' };
-  if (apiKey) {
-    headers['Authorization'] = `Bearer ${apiKey}`;
-  }
-
-  const resp = await fetch(`${endpoint}/v1/chat/completions`, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify({ model, messages: openaiMessages, stream: true })
-  });
-
-  if (!resp.ok) {
-    const text = await resp.text().catch(() => '');
-    if (resp.status === 401) throw new Error('Invalid API key. Check your API key in settings.');
-    throw new Error(`API error ${resp.status}: ${text || 'Request failed'}`);
-  }
-
-  await parseSSE(resp, port, (data) => {
-    const content = data.choices?.[0]?.delta?.content;
-    if (content) {
-      port.postMessage({ type: 'TOKEN', token: content });
-    }
-    if (data.choices?.[0]?.finish_reason) {
-      return true; // Signal done
-    }
-    return false;
-  });
-
-  port.postMessage({ type: 'DONE' });
-}
-
-// --- Claude Streaming (SSE) ---
-
-async function streamClaude(port, endpoint, apiKey, model, messages) {
-  // Separate system message from conversation
-  let systemContent = '';
-  const claudeMessages = [];
-
-  for (const m of messages) {
-    if (m.role === 'system') {
-      systemContent += (systemContent ? '\n' : '') + m.content;
-      continue;
-    }
-
-    if (m.image) {
-      claudeMessages.push({
-        role: m.role,
-        content: [
-          {
-            type: 'image',
-            source: { type: 'base64', media_type: 'image/png', data: m.image }
-          },
-          { type: 'text', text: m.content }
-        ]
-      });
-    } else {
-      claudeMessages.push({ role: m.role, content: m.content });
-    }
-  }
-
-  const body = {
-    model,
-    max_tokens: 4096,
-    stream: true,
-    messages: claudeMessages
-  };
-  if (systemContent) {
-    body.system = systemContent;
-  }
-
-  const resp = await fetch(`${endpoint}/v1/messages`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-api-key': apiKey,
-      'anthropic-version': '2023-06-01',
-      'anthropic-dangerous-direct-browser-access': 'true'
-    },
-    body: JSON.stringify(body)
-  });
-
-  if (!resp.ok) {
-    const text = await resp.text().catch(() => '');
-    if (resp.status === 401) throw new Error('Invalid API key. Check your Claude API key in settings.');
-    throw new Error(`Claude error ${resp.status}: ${text || 'Request failed'}`);
-  }
-
-  await parseSSE(resp, port, (data) => {
-    if (data.type === 'content_block_delta' && data.delta?.text) {
-      port.postMessage({ type: 'TOKEN', token: data.delta.text });
-    }
-    if (data.type === 'message_stop') {
-      return true;
-    }
-    return false;
-  });
-
-  port.postMessage({ type: 'DONE' });
-}
-
-// --- Web Search ---
-
-async function webSearch(query, provider, apiKey) {
-  if (provider === 'brave' && apiKey) {
-    return await braveSearch(query, apiKey);
-  }
-  return await duckduckgoSearch(query);
-}
-
-async function duckduckgoSearch(query) {
-  const url = `https://api.duckduckgo.com/?q=${encodeURIComponent(query)}&format=json&no_redirect=1&no_html=1&skip_disambig=1`;
-  const resp = await fetch(url);
-  if (!resp.ok) throw new Error(`DuckDuckGo error: ${resp.status}`);
-  const data = await resp.json();
-
-  const results = [];
-  if (data.Abstract) {
-    results.push({ title: data.AbstractSource || 'Summary', url: data.AbstractURL, description: data.Abstract });
-  }
-  for (const topic of (data.RelatedTopics || []).slice(0, 4)) {
-    if (topic.Text && topic.FirstURL) {
-      results.push({ title: topic.Text.split(' - ')[0] || topic.Text, url: topic.FirstURL, description: topic.Text });
-    }
-  }
-  return { provider: 'DuckDuckGo', query, results };
-}
-
-async function braveSearch(query, apiKey) {
-  const url = `https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(query)}&count=5`;
-  const resp = await fetch(url, {
-    headers: {
-      'Accept': 'application/json',
-      'Accept-Encoding': 'gzip',
-      'X-Subscription-Token': apiKey
-    }
-  });
-  if (!resp.ok) {
-    if (resp.status === 401) throw new Error('Invalid Brave API key. Check your settings.');
-    throw new Error(`Brave Search error: ${resp.status}`);
-  }
-  const data = await resp.json();
-  const results = (data.web?.results || []).map(r => ({
-    title: r.title,
-    url: r.url,
-    description: r.description || ''
-  }));
-  return { provider: 'Brave', query, results };
-}
-
-// --- SSE Parser ---
-
-async function parseSSE(resp, port, onData) {
-  const reader = resp.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = '';
-
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-
-    buffer += decoder.decode(value, { stream: true });
-    const lines = buffer.split('\n');
-    buffer = lines.pop();
-
-    for (const rawLine of lines) {
-      const line = rawLine.replace(/\r$/, '');
-      if (line.startsWith('data: ')) {
-        const dataStr = line.slice(6).trim();
-        if (dataStr === '[DONE]') return;
-        let data;
-        try {
-          data = JSON.parse(dataStr);
-        } catch (e) {
-          continue; // Skip malformed JSON
-        }
-        const isDone = onData(data);
-        if (isDone) return;
-      }
-    }
-  }
-}

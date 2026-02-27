@@ -20,7 +20,8 @@
     "<all_urls>"
   ],
   "background": {
-    "service_worker": "src/background.js"
+    "service_worker": "src/worker/background.js",
+    "type": "module"
   },
   "content_scripts": [
     {
@@ -30,7 +31,7 @@
     }
   ],
   "side_panel": {
-    "default_path": "src/sidepanel.html"
+    "default_path": "src/panel/sidepanel.html"
   },
   "action": {
     "default_title": "Browser Assistant",
