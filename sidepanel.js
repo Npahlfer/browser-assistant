@@ -194,7 +194,6 @@ function inlineFormat(text, inlineCodes) {
 function toggleSettings() {
   settingsPanel.classList.toggle('hidden');
   downloadMenu.classList.add('hidden');
-  aiSummaryMenu.classList.add('hidden');
 }
 
 function updateProviderUI() {
@@ -269,6 +268,16 @@ async function loadSettings() {
       if (s.model && !s.savedModels && s.provider) savedModels[s.provider] = s.model;
       if (s.includeScreenshot) screenshotToggle.checked = s.includeScreenshot;
       systemPromptInput.value = s.systemPrompt || DEFAULT_SYSTEM_PROMPT;
+      if (s.searchProvider) searchProviderSelect.value = s.searchProvider;
+      if (s.braveApiKey) {
+        braveApiKey = s.braveApiKey;
+        braveKeyInput.value = braveApiKey;
+      }
+      if (s.requestTimeout) {
+        requestTimeout = s.requestTimeout;
+        timeoutInput.value = requestTimeout;
+      }
+
       const provider = providerSelect.value;
       providerSelect.dataset.prev = provider;
       if (CLOUD_PROVIDERS.includes(provider)) {
@@ -279,15 +288,6 @@ async function loadSettings() {
       } else {
         apiKeyGroup.classList.add('hidden');
         endpointInput.disabled = false;
-      }
-      if (s.searchProvider) searchProviderSelect.value = s.searchProvider;
-      if (s.braveApiKey) {
-        braveApiKey = s.braveApiKey;
-        braveKeyInput.value = braveApiKey;
-      }
-      if (s.requestTimeout) {
-        requestTimeout = s.requestTimeout;
-        timeoutInput.value = requestTimeout;
       }
       updateSearchProviderUI();
       await fetchModels();
@@ -377,9 +377,15 @@ function createStreamingMessage() {
   hideWelcome();
   const div = document.createElement('div');
   div.className = 'message assistant';
+  const textSpan = document.createElement('span');
+  textSpan.className = 'text-content';
+  const cursor = document.createElement('span');
+  cursor.className = 'cursor';
+  div.appendChild(textSpan);
+  div.appendChild(cursor);
   chatArea.appendChild(div);
   chatArea.scrollTop = chatArea.scrollHeight;
-  return { container: div };
+  return { container: div, textSpan };
 }
 
 function hideWelcome() {
@@ -525,7 +531,7 @@ async function streamChat(userMessage, screenshotBase64 = null) {
 
   conversationHistory.push({ role: 'user', content: userMessage });
 
-  const { container } = createStreamingMessage();
+  const { container, textSpan } = createStreamingMessage();
   let fullResponse = '';
 
   return new Promise((resolve) => {
@@ -782,6 +788,39 @@ async function handleSend(forceNewScreenshot = false, includeSearch = false) {
   await streamChat(messageText, screenshotBase64);
 }
 
+// --- File Attachment ---
+
+function handleAttachFile() {
+  fileInput.click();
+}
+
+function handleFileSelected(e) {
+  const file = e.target.files[0];
+  if (!file) return;
+  fileInput.value = ''; // Reset so same file can be re-selected
+
+  const reader = new FileReader();
+  reader.onload = (ev) => {
+    const content = ev.target.result;
+    loadedFile = { name: file.name, content };
+    fileChipName.textContent = file.name;
+    fileChip.classList.remove('hidden');
+    // If we have an active system message, update it
+    if (systemMessage) {
+      // Rebuild won't happen automatically; just note the file is attached
+      // It will be included on next buildSystemMessage call
+    }
+  };
+  reader.onerror = () => showBanner('Failed to read file.', 'error');
+  reader.readAsText(file);
+}
+
+function removeFile() {
+  loadedFile = null;
+  fileChip.classList.add('hidden');
+  fileChipName.textContent = '';
+}
+
 // --- AI Summary Download ---
 
 async function downloadAISummary(format = 'md') {
@@ -923,34 +962,6 @@ function downloadConversation(format) {
   URL.revokeObjectURL(url);
 }
 
-// --- File Attachment ---
-
-function handleAttachFile() {
-  fileInput.click();
-}
-
-function handleFileSelected(e) {
-  const file = e.target.files[0];
-  if (!file) return;
-  fileInput.value = ''; // Reset so same file can be re-selected
-
-  const reader = new FileReader();
-  reader.onload = (ev) => {
-    const content = ev.target.result;
-    loadedFile = { name: file.name, content };
-    fileChipName.textContent = file.name;
-    fileChip.classList.remove('hidden');
-  };
-  reader.onerror = () => showBanner('Failed to read file.', 'error');
-  reader.readAsText(file);
-}
-
-function removeFile() {
-  loadedFile = null;
-  fileChip.classList.add('hidden');
-  fileChipName.textContent = '';
-}
-
 // --- Event Listeners ---
 
 settingsBtn.addEventListener('click', toggleSettings);
@@ -974,7 +985,7 @@ downloadBtn.addEventListener('click', (e) => {
   toggleDownloadMenu();
 });
 
-document.querySelectorAll('#download-menu .download-option').forEach(btn => {
+document.querySelectorAll('.download-option').forEach(btn => {
   btn.addEventListener('click', () => downloadConversation(btn.dataset.format));
 });
 
@@ -990,6 +1001,16 @@ document.addEventListener('click', (e) => {
 
 providerSelect.addEventListener('change', () => {
   updateProviderUI();
+  saveSettings();
+});
+
+searchProviderSelect.addEventListener('change', () => {
+  updateSearchProviderUI();
+  saveSettings();
+});
+
+braveKeyInput.addEventListener('change', () => {
+  braveApiKey = braveKeyInput.value.trim();
   saveSettings();
 });
 
@@ -1018,25 +1039,15 @@ systemPromptInput.addEventListener('change', saveSettings);
 
 refreshModelsBtn.addEventListener('click', fetchModels);
 
-searchProviderSelect.addEventListener('change', () => {
-  updateSearchProviderUI();
-  saveSettings();
-});
-
-braveKeyInput.addEventListener('change', () => {
-  braveApiKey = braveKeyInput.value.trim();
-  saveSettings();
-});
-
-attachBtn.addEventListener('click', handleAttachFile);
-fileInput.addEventListener('change', handleFileSelected);
-fileChipRemove.addEventListener('click', removeFile);
-
 summarizeBtn.addEventListener('click', handleSummarize);
 askBtn.addEventListener('click', handleAsk);
 sendBtn.addEventListener('click', () => handleSend(false, false));
 searchSendBtn.addEventListener('click', () => handleSend(false, true));
 screenshotSendBtn.addEventListener('click', () => handleSend(true, false));
+
+attachBtn.addEventListener('click', handleAttachFile);
+fileInput.addEventListener('change', handleFileSelected);
+fileChipRemove.addEventListener('click', removeFile);
 
 userInput.addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && !e.shiftKey) {
