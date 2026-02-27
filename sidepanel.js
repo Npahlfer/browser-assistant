@@ -31,6 +31,7 @@ let apiKeys = {}; // { openai: "sk-...", claude: "sk-..." }
 let savedModels = {}; // { ollama: "llama3", openai: "gpt-4o", ... }
 let braveApiKey = '';
 let loadedFile = null; // { name, content }
+let requestTimeout = 120; // seconds
 
 // DOM elements
 const settingsBtn = document.getElementById('settings-btn');
@@ -65,6 +66,7 @@ const downloadBtn = document.getElementById('download-btn');
 const downloadMenu = document.getElementById('download-menu');
 const aiSummaryBtn = document.getElementById('ai-summary-btn');
 const aiSummaryMenu = document.getElementById('ai-summary-menu');
+const timeoutInput = document.getElementById('timeout-input');
 
 // --- Markdown Renderer ---
 
@@ -249,7 +251,8 @@ function getSettings() {
     includeScreenshot: screenshotToggle.checked,
     systemPrompt: systemPromptInput.value,
     searchProvider: searchProviderSelect.value,
-    braveApiKey
+    braveApiKey,
+    requestTimeout: parseInt(timeoutInput.value) || 120
   };
 }
 
@@ -281,6 +284,10 @@ async function loadSettings() {
       if (s.braveApiKey) {
         braveApiKey = s.braveApiKey;
         braveKeyInput.value = braveApiKey;
+      }
+      if (s.requestTimeout) {
+        requestTimeout = s.requestTimeout;
+        timeoutInput.value = requestTimeout;
       }
       updateSearchProviderUI();
       await fetchModels();
@@ -525,8 +532,32 @@ async function streamChat(userMessage, screenshotBase64 = null) {
     const port = chrome.runtime.connect({ name: 'llm-stream' });
     currentPort = port;
 
+    // Inactivity timeout: resets on every token so long responses aren't cut off,
+    // but fires if the model goes silent for requestTimeout seconds.
+    let inactivityTimer;
+    const resetTimer = () => {
+      clearTimeout(inactivityTimer);
+      inactivityTimer = setTimeout(() => {
+        const msg = `No response for ${requestTimeout}s. Check that your model is running.`;
+        const cursor = container.querySelector('.cursor');
+        if (cursor) cursor.remove();
+        if (!fullResponse) {
+          container.innerHTML = `<span class="error-text">${escHtml(msg)}</span>`;
+          container.classList.add('error-msg');
+        }
+        if (fullResponse) conversationHistory.push({ role: 'assistant', content: fullResponse });
+        showBanner(msg, 'error');
+        setStreaming(false);
+        currentPort = null;
+        try { port.disconnect(); } catch (_) {}
+        resolve();
+      }, requestTimeout * 1000);
+    };
+    resetTimer();
+
     port.onMessage.addListener((msg) => {
       if (msg.type === 'TOKEN') {
+        resetTimer(); // stay alive as long as tokens keep arriving
         fullResponse += msg.token;
         container.innerHTML = renderMarkdown(fullResponse);
         // Re-add cursor
@@ -535,12 +566,14 @@ async function streamChat(userMessage, screenshotBase64 = null) {
         container.appendChild(cursor);
         chatArea.scrollTop = chatArea.scrollHeight;
       } else if (msg.type === 'DONE') {
+        clearTimeout(inactivityTimer);
         container.innerHTML = renderMarkdown(fullResponse);
         conversationHistory.push({ role: 'assistant', content: fullResponse });
         setStreaming(false);
         currentPort = null;
         resolve();
       } else if (msg.type === 'ERROR') {
+        clearTimeout(inactivityTimer);
         if (!fullResponse) {
           container.innerHTML = `<span class="error-text">${escHtml(msg.error)}</span>`;
           container.classList.add('error-msg');
@@ -555,6 +588,7 @@ async function streamChat(userMessage, screenshotBase64 = null) {
     });
 
     port.onDisconnect.addListener(() => {
+      clearTimeout(inactivityTimer);
       if (isStreaming) {
         if (fullResponse) container.innerHTML = renderMarkdown(fullResponse);
         setStreaming(false);
@@ -584,8 +618,8 @@ async function callLLMOnce(messages) {
     let result = '';
     const timer = setTimeout(() => {
       try { port.disconnect(); } catch (_) {}
-      resolve(null);
-    }, 60000); // 60s absolute timeout for one-shot calls
+      resolve(null); // fall back gracefully on timeout
+    }, requestTimeout * 1000);
     port.onMessage.addListener((msg) => {
       if (msg.type === 'TOKEN') result += msg.token;
       else if (msg.type === 'DONE') { clearTimeout(timer); port.disconnect(); resolve(result.trim()); }
@@ -803,9 +837,9 @@ ${convoText}`;
     const port = chrome.runtime.connect({ name: 'llm-stream' });
     const timer = setTimeout(() => {
       try { port.disconnect(); } catch (_) {}
-      showBanner('Summary timed out.', 'error');
+      showBanner(`Summary timed out after ${requestTimeout}s.`, 'error');
       resolve();
-    }, 120000);
+    }, requestTimeout * 1000);
 
     port.onMessage.addListener((msg) => {
       if (msg.type === 'TOKEN') {
@@ -970,6 +1004,10 @@ apikeyInput.addEventListener('change', () => {
 modelSelect.addEventListener('change', () => {
   const provider = providerSelect.value;
   if (modelSelect.value) savedModels[provider] = modelSelect.value;
+  saveSettings();
+});
+timeoutInput.addEventListener('change', () => {
+  requestTimeout = parseInt(timeoutInput.value) || 120;
   saveSettings();
 });
 screenshotToggle.addEventListener('change', () => {
