@@ -13,6 +13,7 @@ Use this context to answer the user's questions accurately. If the answer is not
 const DEFAULT_ENDPOINTS = {
   ollama: 'http://localhost:11434',
   lmstudio: 'http://localhost:1234',
+  llamacpp: 'http://localhost:8080',
   openai: 'https://api.openai.com',
   claude: 'https://api.anthropic.com'
 };
