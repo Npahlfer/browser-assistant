@@ -683,11 +683,12 @@ function addSearchBadge(query) {
 
 async function performSearch(query) {
   const settings = getSettings();
+  const provider = settings.searchProvider || 'duckduckgo';
   try {
     const resp = await chrome.runtime.sendMessage({
       type: 'WEB_SEARCH',
       query,
-      provider: settings.searchProvider || 'duckduckgo',
+      provider,
       apiKey: braveApiKey
     });
     if (resp.error) throw new Error(resp.error);
