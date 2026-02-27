@@ -1,19 +1,19 @@
 # Browser Assistant
 
-A Chrome side panel extension that lets you chat with AI about any web page — using a local model or a cloud API. Summarize pages, ask questions, search the web, and export conversations, all without leaving your browser.
+A Chrome side panel extension that lets you chat with AI about any web page - using a local model or a cloud API. Summarize pages, ask questions, search the web, and export conversations, all without leaving your browser.
 
 ## Features
 
-- **Summarize any page** — one click to get a concise summary of the current tab
-- **Ask questions** — have a multi-turn conversation grounded in the page content
-- **Web search** — augment your questions with live search results (DuckDuckGo or Brave)
-- **Screenshot support** — send a visual snapshot of the page to vision-capable models
-- **Attach local files** — include a file from your computer alongside the page context
-- **Markdown rendering** — responses render with headers, lists, code blocks, bold/italic, and links
-- **Export conversations** — download the chat or an AI-generated summary as `.md` or `.txt`
-- **Custom system prompt** — fully editable with dynamic page and date/time variables
-- **Configurable timeout** — set how long to wait before a slow model is considered unresponsive
-- **No tracking, no telemetry** — all data stays in your browser or goes directly to the provider you configure
+- **Summarize any page**: one click to get a concise summary of the current tab
+- **Ask questions**: have a multi-turn conversation grounded in the page content
+- **Web search**: augment your questions with live search results (DuckDuckGo or Brave)
+- **Screenshot support**: send a visual snapshot of the page to vision-capable models
+- **Attach local files**: include a file from your computer alongside the page context
+- **Markdown rendering**: responses render with headers, lists, code blocks, bold/italic, and links
+- **Export conversations**: download the chat or an AI-generated summary as `.md` or `.txt`
+- **Custom system prompt**: fully editable with dynamic page and date/time variables
+- **Configurable timeout**: set how long to wait before a slow model is considered unresponsive
+- **No tracking, no telemetry**: all data stays in your browser or goes directly to the provider you configure
 
 ## Supported Providers
 
@@ -25,7 +25,7 @@ A Chrome side panel extension that lets you chat with AI about any web page — 
 | [OpenAI](https://platform.openai.com) | Cloud | Yes |
 | [Anthropic Claude](https://www.anthropic.com) | Cloud | Yes |
 
-Local providers run entirely on your machine — no data is sent to any external server.
+Local providers run entirely on your machine - no data is sent to any external server.
 
 ## Installation
 
@@ -39,7 +39,7 @@ SOON
 2. Open Chrome and go to `chrome://extensions`
 3. Enable **Developer mode** (toggle in the top right)
 4. Click **Load unpacked** and select the project folder
-5. The extension icon will appear in your toolbar — click it to open the side panel
+5. The extension icon will appear in your toolbar - click it to open the side panel
 
 ## Getting Started
 
@@ -48,7 +48,7 @@ SOON
 1. [Install Ollama](https://ollama.com) and pull a model, e.g. `ollama pull llama3`
 2. Make sure Ollama is running (`ollama serve`)
 3. Open the extension side panel, go to Settings (⚙)
-4. Select **Ollama** as the provider — the endpoint fills in automatically
+4. Select **Ollama** as the provider, the endpoint fills in automatically
 5. Click the refresh button next to Model and select your model
 6. Navigate to any page and click **Summarize** or **Ask about Page**
 
@@ -127,7 +127,7 @@ Fully customizable. The following variables are replaced at runtime:
 ## Privacy
 
 - **Local providers**: all page content and messages stay on your machine
-- **Cloud providers**: page content and messages are sent to the provider's API (OpenAI / Anthropic) — subject to their respective privacy policies
+- **Cloud providers**: page content and messages are sent to the provider's API (OpenAI / Anthropic) - subject to their respective privacy policies
 - No data is collected by this extension itself
 
 ## Roadmap
