@@ -134,7 +134,7 @@ async function extractPageText(tabId) {
       // Fallback: inject content script programmatically
       await chrome.scripting.executeScript({
         target: { tabId },
-        files: ['content.js']
+        files: ['src/content.js']
       });
       // Small delay to let script initialize
       await new Promise(r => setTimeout(r, 100));
