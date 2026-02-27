@@ -61,6 +61,10 @@ const fileInput = document.getElementById('file-input');
 const fileChip = document.getElementById('file-chip');
 const fileChipName = document.getElementById('file-chip-name');
 const fileChipRemove = document.getElementById('file-chip-remove');
+const downloadBtn = document.getElementById('download-btn');
+const downloadMenu = document.getElementById('download-menu');
+const aiSummaryBtn = document.getElementById('ai-summary-btn');
+const aiSummaryMenu = document.getElementById('ai-summary-menu');
 
 // --- Markdown Renderer ---
 
@@ -187,6 +191,8 @@ function inlineFormat(text, inlineCodes) {
 
 function toggleSettings() {
   settingsPanel.classList.toggle('hidden');
+  downloadMenu.classList.add('hidden');
+  aiSummaryMenu.classList.add('hidden');
 }
 
 function updateProviderUI() {
@@ -732,6 +738,147 @@ async function handleSend(forceNewScreenshot = false, includeSearch = false) {
   await streamChat(messageText, screenshotBase64);
 }
 
+// --- AI Summary Download ---
+
+async function downloadAISummary(format = 'md') {
+  if (conversationHistory.length === 0) {
+    showBanner('Nothing to summarize yet.', 'warning');
+    return;
+  }
+
+  const settings = getSettings();
+  if (!settings.model) {
+    showBanner('Please select a model in settings.', 'warning');
+    return;
+  }
+
+  aiSummaryBtn.disabled = true;
+
+  const convoText = conversationHistory
+    .map(m => `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.content}`)
+    .join('\n\n');
+
+  const formatInstructions = format === 'md'
+    ? `Format the summary as Markdown with these sections:
+
+## Summary
+A concise overview of what was discussed.
+
+## Key Points
+Bullet list of the most important findings or information.
+
+## Details
+Any notable specifics, quotes, data, or conclusions worth preserving.`
+    : `Format the summary as plain text with these sections (no markdown, no asterisks, no hashtags, no special characters):
+
+SUMMARY
+A concise overview of what was discussed.
+
+KEY POINTS
+A numbered list of the most important findings or information.
+
+DETAILS
+Any notable specifics, quotes, data, or conclusions worth preserving.`;
+
+  const summaryPrompt = `Please produce a structured summary of the following conversation. ${formatInstructions}
+
+---
+Conversation:
+${convoText}`;
+
+  let summaryText = '';
+  const summaryMsg = addLoadingMessage('Generating AI summary');
+
+  await new Promise((resolve) => {
+    const port = chrome.runtime.connect({ name: 'llm-stream' });
+    const timer = setTimeout(() => {
+      try { port.disconnect(); } catch (_) {}
+      showBanner('Summary timed out.', 'error');
+      resolve();
+    }, 120000);
+
+    port.onMessage.addListener((msg) => {
+      if (msg.type === 'TOKEN') {
+        summaryText += msg.token;
+      } else if (msg.type === 'DONE' || msg.type === 'ERROR') {
+        clearTimeout(timer);
+        if (msg.type === 'ERROR') showBanner(msg.error, 'error');
+        resolve();
+      }
+    });
+
+    port.onDisconnect.addListener(() => { clearTimeout(timer); resolve(); });
+
+    port.postMessage({
+      type: 'CHAT_REQUEST',
+      provider: settings.provider,
+      endpoint: settings.endpoint,
+      apiKey: settings.apiKey,
+      model: settings.model,
+      messages: [{ role: 'user', content: summaryPrompt }]
+    });
+  });
+
+  summaryMsg.remove();
+  aiSummaryBtn.disabled = false;
+
+  if (!summaryText) return;
+
+  const date = new Date().toLocaleDateString('en-CA');
+  const header = format === 'md'
+    ? `# AI Conversation Summary\n_${date}_\n\n`
+    : `AI Conversation Summary — ${date}\n${'='.repeat(40)}\n\n`;
+  const blob = new Blob([header + summaryText], { type: 'text/plain;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `summary-${date}.${format}`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+// --- Download ---
+
+function toggleDownloadMenu() {
+  downloadMenu.classList.toggle('hidden');
+  aiSummaryMenu.classList.add('hidden');
+  settingsPanel.classList.add('hidden');
+}
+
+function downloadConversation(format) {
+  downloadMenu.classList.add('hidden');
+
+  if (conversationHistory.length === 0) {
+    showBanner('Nothing to download yet.', 'warning');
+    return;
+  }
+
+  let content = '';
+  const date = new Date().toLocaleDateString('en-CA');
+
+  if (format === 'md') {
+    content = `# Browser Assistant Conversation\n_${date}_\n\n`;
+    for (const msg of conversationHistory) {
+      const role = msg.role === 'user' ? '**You**' : '**Assistant**';
+      content += `${role}\n\n${msg.content}\n\n---\n\n`;
+    }
+  } else {
+    content = `Browser Assistant Conversation — ${date}\n${'='.repeat(50)}\n\n`;
+    for (const msg of conversationHistory) {
+      const role = msg.role === 'user' ? 'YOU' : 'ASSISTANT';
+      content += `${role}:\n${msg.content}\n\n${'-'.repeat(30)}\n\n`;
+    }
+  }
+
+  const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `conversation-${date}.${format}`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
 // --- File Attachment ---
 
 function handleAttachFile() {
@@ -763,6 +910,39 @@ function removeFile() {
 // --- Event Listeners ---
 
 settingsBtn.addEventListener('click', toggleSettings);
+
+aiSummaryBtn.addEventListener('click', (e) => {
+  e.stopPropagation();
+  downloadMenu.classList.add('hidden');
+  settingsPanel.classList.add('hidden');
+  aiSummaryMenu.classList.toggle('hidden');
+});
+
+document.querySelectorAll('#ai-summary-menu .download-option').forEach(btn => {
+  btn.addEventListener('click', () => {
+    aiSummaryMenu.classList.add('hidden');
+    downloadAISummary(btn.dataset.format);
+  });
+});
+
+downloadBtn.addEventListener('click', (e) => {
+  e.stopPropagation();
+  toggleDownloadMenu();
+});
+
+document.querySelectorAll('#download-menu .download-option').forEach(btn => {
+  btn.addEventListener('click', () => downloadConversation(btn.dataset.format));
+});
+
+// Close menus on outside click
+document.addEventListener('click', (e) => {
+  if (!downloadMenu.contains(e.target) && e.target !== downloadBtn) {
+    downloadMenu.classList.add('hidden');
+  }
+  if (!aiSummaryMenu.contains(e.target) && e.target !== aiSummaryBtn) {
+    aiSummaryMenu.classList.add('hidden');
+  }
+});
 
 providerSelect.addEventListener('change', () => {
   updateProviderUI();
