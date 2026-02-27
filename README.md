@@ -134,7 +134,7 @@ Fully customizable. The following variables are replaced at runtime:
 
 - Voice input/output
 - Firefox, Edge, Brave, and Zen Browser support
-- Chrome built-in AI support (when available in the EU)
+- Chrome built-in AI support
 
 ## License
 
