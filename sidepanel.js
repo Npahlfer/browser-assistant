@@ -8,7 +8,7 @@ URL: {url}
 Page Content:
 {content}
 
-Use this context to answer the user's questions accurately. If the answer is not in the page content, say so.`;
+Use this context to answer the user's questions accurately. If the answer is not in the page content, say so. Exclude summary of the navigation and other trivial content. Don't include the link of the page in your response, unless asked to.`;
 
 const DEFAULT_ENDPOINTS = {
   ollama: 'http://localhost:11434',
@@ -470,11 +470,21 @@ async function getScreenshotBase64(forceNew = false) {
 
 function buildSystemMessage(pageData) {
   const template = systemPromptInput.value.trim() || DEFAULT_SYSTEM_PROMPT;
+  const now = new Date();
+  const months = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+  const days = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+
   let result = template
     .replace(/\{title\}/g, pageData.title)
     .replace(/\{url\}/g, pageData.url)
     .replace(/\{description\}/g, pageData.metaDescription || '')
-    .replace(/\{content\}/g, pageData.content);
+    .replace(/\{content\}/g, pageData.content)
+    .replace(/\{currentDate\}/g, now.toLocaleDateString('en-CA')) // YYYY-MM-DD
+    .replace(/\{currentYear\}/g, String(now.getFullYear()))
+    .replace(/\{currentMonth\}/g, months[now.getMonth()])
+    .replace(/\{currentDay\}/g, days[now.getDay()])
+    .replace(/\{currentHour\}/g, String(now.getHours()).padStart(2, '0'))
+    .replace(/\{currentMinute\}/g, String(now.getMinutes()).padStart(2, '0'));
 
   // Append loaded file context
   if (loadedFile) {
