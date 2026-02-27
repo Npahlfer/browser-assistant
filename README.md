@@ -31,7 +31,7 @@ Local providers run entirely on your machine — no data is sent to any external
 
 ### From the Chrome Web Store
 
-Search for **Browser Assistant** or install directly from the store listing.
+SOON
 
 ### Manual installation (developer mode)
 
