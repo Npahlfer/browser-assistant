@@ -545,7 +545,72 @@ async function streamChat(userMessage, screenshotBase64 = null) {
   });
 }
 
+// --- Utility: silent one-shot LLM call (collects full response, no UI) ---
+
+async function callLLMOnce(messages) {
+  const settings = getSettings();
+  if (!settings.model) return null;
+  return new Promise((resolve) => {
+    const port = chrome.runtime.connect({ name: 'llm-stream' });
+    let result = '';
+    const timer = setTimeout(() => {
+      try { port.disconnect(); } catch (_) {}
+      resolve(null);
+    }, 60000); // 60s absolute timeout for one-shot calls
+    port.onMessage.addListener((msg) => {
+      if (msg.type === 'TOKEN') result += msg.token;
+      else if (msg.type === 'DONE') { clearTimeout(timer); port.disconnect(); resolve(result.trim()); }
+      else if (msg.type === 'ERROR') { clearTimeout(timer); port.disconnect(); resolve(null); }
+    });
+    port.onDisconnect.addListener(() => { clearTimeout(timer); resolve(result.trim() || null); });
+    port.postMessage({
+      type: 'CHAT_REQUEST',
+      provider: settings.provider,
+      endpoint: settings.endpoint,
+      apiKey: settings.apiKey,
+      model: settings.model,
+      messages
+    });
+  });
+}
+
 // --- Web Search ---
+
+async function generateSearchQuery(userMessage) {
+  const contextParts = [];
+
+  // Pull title and URL out of the system message if we have one
+  if (systemMessage) {
+    const titleMatch = systemMessage.match(/^Title: (.+)$/m);
+    const urlMatch = systemMessage.match(/^URL: (.+)$/m);
+    if (titleMatch) contextParts.push(`Page title: ${titleMatch[1].trim()}`);
+    if (urlMatch) contextParts.push(`Page URL: ${urlMatch[1].trim()}`);
+  }
+
+  // Include the last few conversation turns for context
+  const recent = conversationHistory.slice(-6);
+  if (recent.length > 0) {
+    contextParts.push('Recent conversation:\n' +
+      recent.map(m => `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.content.slice(0, 300)}`).join('\n'));
+  }
+
+  const context = contextParts.length ? `\n\nContext:\n${contextParts.join('\n')}` : '';
+  const prompt = `Generate the most effective web search query for the question below. Use the context to make it specific and useful. Reply with ONLY the search query — no explanation, no quotes, no punctuation at the end.${context}\n\nQuestion: ${userMessage}`;
+
+  const generated = await callLLMOnce([{ role: 'user', content: prompt }]);
+  // Strip surrounding quotes the model might add anyway
+  return generated ? generated.replace(/^["']|["']$/g, '').trim() : userMessage;
+}
+
+function addSearchBadge(query) {
+  hideWelcome();
+  const badge = document.createElement('div');
+  badge.className = 'search-badge';
+  badge.innerHTML = `<svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="5" cy="5" r="3.5"/><path d="M8 8l2.5 2.5"/></svg><span>${escHtml(query)}</span>`;
+  chatArea.appendChild(badge);
+  chatArea.scrollTop = chatArea.scrollHeight;
+  return badge;
+}
 
 async function performSearch(query) {
   const settings = getSettings();
@@ -632,8 +697,14 @@ async function handleSend(forceNewScreenshot = false, includeSearch = false) {
   let messageText = text;
 
   if (includeSearch) {
+    const queryLoadingMsg = addLoadingMessage('Crafting search query');
+    const searchQuery = await generateSearchQuery(text);
+    queryLoadingMsg.remove();
+
+    addSearchBadge(searchQuery);
+
     const searchLoadingMsg = addLoadingMessage('Searching the web');
-    const searchResults = await performSearch(text);
+    const searchResults = await performSearch(searchQuery);
     searchLoadingMsg.remove();
 
     const formatted = formatSearchResults(searchResults);
