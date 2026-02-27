@@ -44,10 +44,132 @@ const summarizeBtn = document.getElementById('summarize-btn');
 const askBtn = document.getElementById('ask-btn');
 const statusBanner = document.getElementById('status-banner');
 const chatArea = document.getElementById('chat-area');
+const welcomeState = document.getElementById('welcome-state');
 const inputArea = document.getElementById('input-area');
 const userInput = document.getElementById('user-input');
 const sendBtn = document.getElementById('send-btn');
 const screenshotSendBtn = document.getElementById('screenshot-send-btn');
+
+// --- Markdown Renderer ---
+
+function escHtml(str) {
+  return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+function renderMarkdown(text) {
+  // 1. Extract and protect fenced code blocks
+  const codeBlocks = [];
+  text = text.replace(/```([\w-]*)\n?([\s\S]*?)```/g, (_, lang, code) => {
+    const i = codeBlocks.length;
+    const safeCode = escHtml(code.replace(/\n$/, ''));
+    codeBlocks.push(`<pre><code${lang ? ` class="lang-${escHtml(lang)}"` : ''}>${safeCode}</code></pre>`);
+    return `\x02${i}\x02`;
+  });
+
+  // 2. Extract and protect inline code
+  const inlineCodes = [];
+  text = text.replace(/`([^`\n]+)`/g, (_, code) => {
+    const i = inlineCodes.length;
+    inlineCodes.push(`<code>${escHtml(code)}</code>`);
+    return `\x03${i}\x03`;
+  });
+
+  // 3. Escape HTML in remaining text
+  text = escHtml(text);
+
+  // 4. Process line-by-line for block elements
+  const lines = text.split('\n');
+  const out = [];
+  let inUl = false, inOl = false;
+
+  const closeList = () => {
+    if (inUl) { out.push('</ul>'); inUl = false; }
+    if (inOl) { out.push('</ol>'); inOl = false; }
+  };
+
+  for (const line of lines) {
+    // Code block placeholder on its own line
+    if (/^\x02\d+\x02$/.test(line)) {
+      closeList();
+      out.push(line); // restored later
+      continue;
+    }
+
+    // Heading
+    const hMatch = line.match(/^(#{1,6}) (.+)$/);
+    if (hMatch) {
+      closeList();
+      const lvl = hMatch[1].length;
+      out.push(`<h${lvl}>${inlineFormat(hMatch[2], inlineCodes)}</h${lvl}>`);
+      continue;
+    }
+
+    // Horizontal rule
+    if (/^(-{3,}|\*{3,}|_{3,})$/.test(line.trim())) {
+      closeList();
+      out.push('<hr>');
+      continue;
+    }
+
+    // Blockquote
+    if (/^> /.test(line)) {
+      closeList();
+      out.push(`<blockquote>${inlineFormat(line.slice(2), inlineCodes)}</blockquote>`);
+      continue;
+    }
+
+    // Unordered list
+    if (/^[*\-+] /.test(line)) {
+      if (inOl) { out.push('</ol>'); inOl = false; }
+      if (!inUl) { out.push('<ul>'); inUl = true; }
+      out.push(`<li>${inlineFormat(line.replace(/^[*\-+] /, ''), inlineCodes)}</li>`);
+      continue;
+    }
+
+    // Ordered list
+    if (/^\d+\. /.test(line)) {
+      if (inUl) { out.push('</ul>'); inUl = false; }
+      if (!inOl) { out.push('<ol>'); inOl = true; }
+      out.push(`<li>${inlineFormat(line.replace(/^\d+\. /, ''), inlineCodes)}</li>`);
+      continue;
+    }
+
+    // Empty line
+    if (!line.trim()) {
+      closeList();
+      out.push('<br>');
+      continue;
+    }
+
+    // Regular text
+    closeList();
+    out.push(`<p>${inlineFormat(line, inlineCodes)}</p>`);
+  }
+
+  closeList();
+
+  // 5. Assemble and restore
+  let html = out.join('');
+  html = html.replace(/\x02(\d+)\x02/g, (_, i) => codeBlocks[+i]);
+  html = html.replace(/\x03(\d+)\x03/g, (_, i) => inlineCodes[+i]);
+  return html;
+}
+
+function inlineFormat(text, inlineCodes) {
+  // Bold + italic combinations first
+  text = text.replace(/\*\*\*([^*\n]+)\*\*\*/g, '<strong><em>$1</em></strong>');
+  text = text.replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>');
+  text = text.replace(/\*([^*\n]+)\*/g, '<em>$1</em>');
+  text = text.replace(/___([^_\n]+)___/g, '<strong><em>$1</em></strong>');
+  text = text.replace(/__([^_\n]+)__/g, '<strong>$1</strong>');
+  text = text.replace(/_([^_\n]+)_/g, '<em>$1</em>');
+  // Links
+  text = text.replace(/\[([^\]]+)\]\(([^)]+)\)/g,
+    '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
+  // Restore inline code
+  text = text.replace(/\x03(\d+)\x03/g, (_, i) => inlineCodes[+i]);
+  return text;
+}
 
 // --- Settings ---
 
@@ -56,7 +178,6 @@ function toggleSettings() {
 }
 
 function updateProviderUI() {
-  // Save current key and model before switching
   const prevProvider = apikeyInput.dataset.provider || providerSelect.dataset.prev;
   if (prevProvider) {
     if (apikeyInput.value.trim()) apiKeys[prevProvider] = apikeyInput.value.trim();
@@ -78,7 +199,6 @@ function updateProviderUI() {
     endpointInput.disabled = false;
   }
   modelSelect.innerHTML = '<option value="">-- Select a model --</option>';
-  // Restore models list and selection for this provider if we have them
   fetchModels().then(() => {
     if (savedModels[provider]) modelSelect.value = savedModels[provider];
   });
@@ -86,7 +206,6 @@ function updateProviderUI() {
 
 function getSettings() {
   const provider = providerSelect.value;
-  // Keep apiKeys in sync with current input
   if (CLOUD_PROVIDERS.includes(provider) && apikeyInput.value.trim()) {
     apiKeys[provider] = apikeyInput.value.trim();
   }
@@ -111,14 +230,11 @@ async function loadSettings() {
       if (s.provider) providerSelect.value = s.provider;
       if (s.endpoint) endpointInput.value = s.endpoint;
       if (s.apiKeys) apiKeys = s.apiKeys;
-      // Migrate old single apiKey to per-provider if needed
       if (s.apiKey && !s.apiKeys && s.provider) apiKeys[s.provider] = s.apiKey;
       if (s.savedModels) savedModels = s.savedModels;
-      // Migrate old single model to per-provider if needed
       if (s.model && !s.savedModels && s.provider) savedModels[s.provider] = s.model;
       if (s.includeScreenshot) screenshotToggle.checked = s.includeScreenshot;
       systemPromptInput.value = s.systemPrompt || DEFAULT_SYSTEM_PROMPT;
-      // Update UI visibility and load correct key
       const provider = providerSelect.value;
       providerSelect.dataset.prev = provider;
       if (CLOUD_PROVIDERS.includes(provider)) {
@@ -130,7 +246,6 @@ async function loadSettings() {
         apiKeyGroup.classList.add('hidden');
         endpointInput.disabled = false;
       }
-      // Restore model list and selection
       await fetchModels();
       if (savedModels[provider]) modelSelect.value = savedModels[provider];
     }
@@ -190,31 +305,49 @@ function hideBanner() {
 
 // --- Chat ---
 
-function addMessage(role, text) {
+function addMessage(role, text, isMarkdown = false) {
+  hideWelcome();
   const div = document.createElement('div');
   div.className = `message ${role}`;
-  div.textContent = text;
+  if (isMarkdown) {
+    div.innerHTML = renderMarkdown(text);
+  } else {
+    div.textContent = text;
+  }
+  chatArea.appendChild(div);
+  chatArea.scrollTop = chatArea.scrollHeight;
+  return div;
+}
+
+function addLoadingMessage(text = 'Thinking') {
+  hideWelcome();
+  const div = document.createElement('div');
+  div.className = 'message assistant loading-message';
+  div.innerHTML = `<span class="loading-label">${escHtml(text)}</span><span class="loading-dots"><span></span><span></span><span></span></span>`;
   chatArea.appendChild(div);
   chatArea.scrollTop = chatArea.scrollHeight;
   return div;
 }
 
 function createStreamingMessage() {
+  hideWelcome();
   const div = document.createElement('div');
   div.className = 'message assistant';
-  const textSpan = document.createElement('span');
-  textSpan.className = 'text-content';
-  const cursor = document.createElement('span');
-  cursor.className = 'cursor';
-  div.appendChild(textSpan);
-  div.appendChild(cursor);
   chatArea.appendChild(div);
   chatArea.scrollTop = chatArea.scrollHeight;
-  return { container: div, textSpan };
+  return { container: div };
+}
+
+function hideWelcome() {
+  if (welcomeState) welcomeState.style.display = 'none';
 }
 
 function clearChat(resetContext = true) {
   chatArea.innerHTML = '';
+  if (welcomeState) {
+    welcomeState.style.display = '';
+    chatArea.appendChild(welcomeState);
+  }
   conversationHistory = [];
   if (resetContext) {
     systemMessage = '';
@@ -251,7 +384,6 @@ async function getPageData() {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     if (!tab) throw new Error('No active tab found');
 
-    // Check for restricted pages
     if (tab.url && (tab.url.startsWith('chrome://') || tab.url.startsWith('chrome-extension://') ||
         tab.url.startsWith('about:') || tab.url.startsWith('edge://'))) {
       throw new Error('This page is restricted and cannot be read.');
@@ -287,7 +419,6 @@ async function captureScreenshot() {
 async function getScreenshotBase64(forceNew = false) {
   if (!screenshotToggle.checked) return null;
   if (forceNew || !cachedScreenshot) return await captureScreenshot();
-  // Check if tab or URL changed
   try {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     if (tab && (tab.id !== cachedScreenshot.tabId || tab.url !== cachedScreenshot.url)) {
@@ -319,26 +450,20 @@ async function streamChat(userMessage, screenshotBase64 = null) {
   setStreaming(true);
   hideBanner();
 
-  // Build messages array
   const messages = [
     { role: 'system', content: systemMessage },
     ...conversationHistory
   ];
 
   if (screenshotBase64) {
-    // Add user message with image
-    messages.push({
-      role: 'user',
-      content: userMessage,
-      image: screenshotBase64
-    });
+    messages.push({ role: 'user', content: userMessage, image: screenshotBase64 });
   } else {
     messages.push({ role: 'user', content: userMessage });
   }
 
   conversationHistory.push({ role: 'user', content: userMessage });
 
-  const { container, textSpan } = createStreamingMessage();
+  const { container } = createStreamingMessage();
   let fullResponse = '';
 
   return new Promise((resolve) => {
@@ -348,22 +473,24 @@ async function streamChat(userMessage, screenshotBase64 = null) {
     port.onMessage.addListener((msg) => {
       if (msg.type === 'TOKEN') {
         fullResponse += msg.token;
-        textSpan.textContent = fullResponse;
+        container.innerHTML = renderMarkdown(fullResponse);
+        // Re-add cursor
+        const cursor = document.createElement('span');
+        cursor.className = 'cursor';
+        container.appendChild(cursor);
         chatArea.scrollTop = chatArea.scrollHeight;
       } else if (msg.type === 'DONE') {
-        // Remove cursor
-        const cursor = container.querySelector('.cursor');
-        if (cursor) cursor.remove();
+        container.innerHTML = renderMarkdown(fullResponse);
         conversationHistory.push({ role: 'assistant', content: fullResponse });
         setStreaming(false);
         currentPort = null;
         resolve();
       } else if (msg.type === 'ERROR') {
-        const cursor = container.querySelector('.cursor');
-        if (cursor) cursor.remove();
         if (!fullResponse) {
-          textSpan.textContent = msg.error;
+          container.innerHTML = `<span class="error-text">${escHtml(msg.error)}</span>`;
           container.classList.add('error-msg');
+        } else {
+          container.innerHTML = renderMarkdown(fullResponse);
         }
         showBanner(msg.error, 'error');
         setStreaming(false);
@@ -374,8 +501,7 @@ async function streamChat(userMessage, screenshotBase64 = null) {
 
     port.onDisconnect.addListener(() => {
       if (isStreaming) {
-        const cursor = container.querySelector('.cursor');
-        if (cursor) cursor.remove();
+        if (fullResponse) container.innerHTML = renderMarkdown(fullResponse);
         setStreaming(false);
         currentPort = null;
         resolve();
@@ -399,7 +525,7 @@ async function handleSummarize() {
   clearChat();
   setMode('summarize');
 
-  const loadingMsg = addMessage('assistant', 'Extracting page content...');
+  const loadingMsg = addLoadingMessage('Extracting page content');
 
   try {
     const pageData = await getPageData();
@@ -408,7 +534,6 @@ async function handleSummarize() {
     loadingMsg.remove();
     addMessage('user', 'Summarize this page');
 
-    // Capture fresh screenshot at conversation start
     const screenshotBase64 = await getScreenshotBase64(true);
 
     await streamChat(
@@ -416,7 +541,6 @@ async function handleSummarize() {
       screenshotBase64
     );
 
-    // After summary, switch to ask mode for follow-ups
     setMode('ask');
   } catch (e) {
     loadingMsg.remove();
@@ -425,9 +549,8 @@ async function handleSummarize() {
 }
 
 async function handleAsk() {
-  // If no context yet, extract it
   if (!systemMessage) {
-    const loadingMsg = addMessage('assistant', 'Extracting page content...');
+    const loadingMsg = addLoadingMessage('Extracting page content');
     try {
       const pageData = await getPageData();
       systemMessage = buildSystemMessage(pageData);
@@ -438,7 +561,6 @@ async function handleAsk() {
       return;
     }
   }
-  // Capture fresh screenshot at conversation start
   await getScreenshotBase64(true);
   clearChat(false);
   setMode('ask');
@@ -452,9 +574,7 @@ async function handleSend(forceNewScreenshot = false) {
   userInput.style.height = 'auto';
   addMessage('user', text);
 
-  // Reuse cached screenshot unless tab/URL changed or forced
   const screenshotBase64 = await getScreenshotBase64(forceNewScreenshot);
-
   await streamChat(text, screenshotBase64);
 }
 
