@@ -13,7 +13,7 @@ A Chrome side panel extension that lets you chat with AI about any web page - us
 - **Export conversations**: download the chat or an AI-generated summary as `.md` or `.txt`
 - **Custom system prompt**: fully editable with dynamic page and date/time variables
 - **Configurable timeout**: set how long to wait before a slow model is considered unresponsive
-- **No tracking, no telemetry**: all data stays in your browser or goes directly to the provider you configure
+- **No telemetry or analytics**: the extension does not include tracking or analytics code
 
 ## Supported Providers
 
@@ -126,9 +126,12 @@ Fully customizable. The following variables are replaced at runtime:
 
 ## Privacy
 
-- **Local providers**: all page content and messages stay on your machine
-- **Cloud providers**: page content and messages are sent to the provider's API (OpenAI / Anthropic) - subject to their respective privacy policies
-- No data is collected by this extension itself
+- **Local providers**: page content, prompts, screenshots, and responses stay on your machine and are sent only to the local model server you configure
+- **Cloud providers**: page content, prompts, screenshots, and responses are sent directly to the provider's API (for example OpenAI or Anthropic), subject to that provider's privacy policy
+- **Web search**: search queries are sent directly to DuckDuckGo or Brave Search when you use the search feature
+- **Local storage**: the extension stores settings, selected models, API keys, attached file content, and page conversation history in `chrome.storage.local` on your device
+- The extension does not include analytics, advertising, or third-party tracking scripts
+- See [PRIVACY.md](./PRIVACY.md) for a publishable privacy policy
 
 ## Roadmap
 
