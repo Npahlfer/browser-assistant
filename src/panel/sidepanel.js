@@ -34,8 +34,10 @@ let savedModels = {}; // { ollama: "llama3", openai: "gpt-4o", ... }
 let braveApiKey = '';
 let loadedFile = null; // { name, content }
 let requestTimeout = 120; // seconds
+let activeTabId = null;
 let activePageKey = null;
 let pageConversations = {};
+let summarySessions = {};
 let activeRequest = null;
 
 // DOM elements
@@ -312,15 +314,42 @@ function setMode(mode) {
   }
 }
 
+function requestOwnsVisibleContext(request = activeRequest) {
+  if (!request) return false;
+  if (request.kind === 'send') {
+    return currentMode === 'ask' && request.pageKey === activePageKey;
+  }
+  if (request.kind === 'summarize') {
+    return currentMode === 'summarize' && request.tabId === activeTabId;
+  }
+  return false;
+}
+
+function updateRequestUI() {
+  summarizeBtn.disabled = isStreaming;
+  askBtn.disabled = isStreaming;
+  sendBtn.disabled = isStreaming;
+  searchSendBtn.disabled = isStreaming;
+  screenshotSendBtn.disabled = isStreaming;
+  const showCancel = isStreaming && requestOwnsVisibleContext();
+  cancelBtn.classList.toggle('hidden', !showCancel);
+  cancelBtn.disabled = !showCancel;
+}
+
 function setStreaming(streaming) {
   isStreaming = streaming;
-  summarizeBtn.disabled = streaming;
-  askBtn.disabled = streaming;
-  sendBtn.disabled = streaming;
-  searchSendBtn.disabled = streaming;
-  screenshotSendBtn.disabled = streaming;
-  cancelBtn.classList.toggle('hidden', !streaming);
-  cancelBtn.disabled = !streaming;
+  updateRequestUI();
+}
+
+function restoreStreamingNodeIfNeeded() {
+  if (!isStreaming || !activeRequest || !requestOwnsVisibleContext(activeRequest)) return;
+  activeRequest.streamingNode = createStreamingMessage().container;
+  if (activeRequest.fullResponse) {
+    activeRequest.streamingNode.innerHTML = renderMarkdown(activeRequest.fullResponse);
+    const cursor = document.createElement('span');
+    cursor.className = 'cursor';
+    activeRequest.streamingNode.appendChild(cursor);
+  }
 }
 
 function updateScreenshotButtonVisibility() {
@@ -344,12 +373,45 @@ function cloneHistory(history) {
   return history.map(msg => ({ ...msg }));
 }
 
+function upsertAskConversation(pageKey, nextSystemMessage, nextHistory) {
+  if (!pageKey) return;
+  if (!nextSystemMessage && nextHistory.length === 0) {
+    delete pageConversations[pageKey];
+  } else {
+    pageConversations[pageKey] = {
+      systemMessage: nextSystemMessage,
+      history: cloneHistory(nextHistory),
+      updatedAt: Date.now()
+    };
+  }
+  persistPageConversations().catch((e) => {
+    console.error('Failed to save page conversations:', e);
+  });
+}
+
+function getSummarySession(tabId, create = false) {
+  if (!tabId) return null;
+  if (!summarySessions[tabId] && create) {
+    summarySessions[tabId] = { systemMessage: '', history: [] };
+  }
+  return summarySessions[tabId] || null;
+}
+
+function setSummarySession(tabId, nextSystemMessage, nextHistory) {
+  if (!tabId) return;
+  summarySessions[tabId] = {
+    systemMessage: nextSystemMessage,
+    history: cloneHistory(nextHistory)
+  };
+}
+
 function createViewSnapshot() {
   return {
     conversationHistory: cloneHistory(conversationHistory),
     systemMessage,
     currentMode,
-    pageKey: activePageKey
+    pageKey: activePageKey,
+    tabId: activeTabId
   };
 }
 
@@ -357,6 +419,7 @@ function restoreViewSnapshot(snapshot) {
   systemMessage = snapshot.systemMessage || '';
   currentMode = snapshot.currentMode || null;
   activePageKey = snapshot.pageKey || activePageKey;
+  activeTabId = snapshot.tabId || activeTabId;
 
   if (snapshot.conversationHistory.length > 0) {
     renderConversation(snapshot.conversationHistory);
@@ -367,28 +430,28 @@ function restoreViewSnapshot(snapshot) {
   setMode(currentMode);
 
   if (currentMode === 'ask' && snapshot.pageKey && snapshot.pageKey === activePageKey) {
-    if (!systemMessage && conversationHistory.length === 0) {
-      delete pageConversations[activePageKey];
-    } else {
-      pageConversations[activePageKey] = {
-        systemMessage,
-        history: cloneHistory(conversationHistory),
-        updatedAt: Date.now()
-      };
-    }
-    persistPageConversations().catch((e) => {
-      console.error('Failed to restore page conversation after cancel:', e);
-    });
+    upsertAskConversation(activePageKey, systemMessage, conversationHistory);
+  }
+
+  if (currentMode === 'summarize' && snapshot.tabId === activeTabId) {
+    setSummarySession(activeTabId, systemMessage, conversationHistory);
   }
 }
 
-function beginRequest(kind) {
+function beginRequest(kind, meta = {}) {
   const request = {
     id: Date.now() + Math.random(),
     kind,
+    tabId: meta.tabId || activeTabId,
+    pageKey: meta.pageKey || activePageKey,
+    systemMessage: meta.systemMessage || systemMessage,
+    baseHistory: cloneHistory(meta.baseHistory || conversationHistory),
+    displayHistory: cloneHistory(meta.displayHistory || conversationHistory),
     snapshot: createViewSnapshot(),
     cancelled: false,
-    finalized: false
+    finalized: false,
+    fullResponse: '',
+    streamingNode: null
   };
   activeRequest = request;
   setStreaming(true);
@@ -403,6 +466,7 @@ function finishRequest(request) {
   if (!request || activeRequest?.id !== request.id) return;
   activeRequest = null;
   setStreaming(false);
+  hideBanner();
 }
 
 function cancelRequestUI(request) {
@@ -451,20 +515,7 @@ async function loadPageConversations() {
 
 function saveCurrentAskConversation() {
   if (currentMode !== 'ask' || !activePageKey) return;
-
-  if (!systemMessage && conversationHistory.length === 0) {
-    delete pageConversations[activePageKey];
-  } else {
-    pageConversations[activePageKey] = {
-      systemMessage,
-      history: cloneHistory(conversationHistory),
-      updatedAt: Date.now()
-    };
-  }
-
-  persistPageConversations().catch((e) => {
-    console.error('Failed to save page conversations:', e);
-  });
+  upsertAskConversation(activePageKey, systemMessage, conversationHistory);
 }
 
 function loadAskConversationForPage(pageKey) {
@@ -491,6 +542,7 @@ async function getActiveTab() {
 
 async function updateActivePageKey() {
   const tab = await getActiveTab();
+  activeTabId = tab?.id || null;
   const nextPageKey = getPageKey(tab?.url);
   const pageChanged = nextPageKey !== activePageKey;
 
@@ -503,23 +555,25 @@ async function updateActivePageKey() {
 }
 
 async function syncVisibleConversationToActivePage() {
-  const { pageChanged, pageKey } = await updateActivePageKey();
-  if (!pageChanged) return;
-
+  const { pageKey } = await updateActivePageKey();
   hideBanner();
-
-  if (isStreaming && currentPort) {
-    try { currentPort.disconnect(); } catch (_) { }
-  }
-
-  if (currentMode === 'ask') {
+  const summarySession = getSummarySession(activeTabId);
+  if ((activeRequest?.kind === 'summarize' && activeRequest.tabId === activeTabId) ||
+      (summarySession && summarySession.history.length > 0)) {
+    const session = summarySession || getSummarySession(activeTabId, true);
+    systemMessage = session.systemMessage || '';
+    renderConversation(session.history || []);
+    setMode('summarize');
+  } else {
     loadAskConversationForPage(pageKey);
     setMode('ask');
-    return;
   }
 
-  clearChat();
-  setMode(null);
+  if (isStreaming && !requestOwnsVisibleContext()) {
+    showBanner('Busy in another tab.', 'warning');
+  }
+  restoreStreamingNodeIfNeeded();
+  updateRequestUI();
 }
 
 // --- Page Data ---
@@ -614,8 +668,8 @@ async function streamChat(userMessage, screenshotBase64 = null) {
   hideBanner();
 
   const messages = [
-    { role: 'system', content: systemMessage },
-    ...conversationHistory
+    { role: 'system', content: request.systemMessage },
+    ...request.baseHistory
   ];
 
   if (screenshotBase64) {
@@ -624,11 +678,15 @@ async function streamChat(userMessage, screenshotBase64 = null) {
     messages.push({ role: 'user', content: userMessage });
   }
 
-  conversationHistory.push({ role: 'user', content: userMessage });
-  saveCurrentAskConversation();
+  if (request.kind === 'send') {
+    upsertAskConversation(request.pageKey, request.systemMessage, request.displayHistory);
+  } else if (request.kind === 'summarize') {
+    setSummarySession(request.tabId, request.systemMessage, request.displayHistory);
+  }
 
-  const { container, textSpan } = createStreamingMessage();
-  let fullResponse = '';
+  if (requestOwnsVisibleContext(request)) {
+    request.streamingNode = createStreamingMessage().container;
+  }
 
   return new Promise((resolve) => {
     const port = chrome.runtime.connect({ name: 'llm-stream' });
@@ -645,15 +703,20 @@ async function streamChat(userMessage, screenshotBase64 = null) {
           return;
         }
         const msg = `No response for ${requestTimeout}s. Check that your model is running.`;
-        const cursor = container.querySelector('.cursor');
+        const container = request.streamingNode;
+        const cursor = container?.querySelector('.cursor');
         if (cursor) cursor.remove();
-        if (!fullResponse) {
+        if (container && !request.fullResponse) {
           container.innerHTML = `<span class="error-text">${escHtml(msg)}</span>`;
           container.classList.add('error-msg');
         }
-        if (fullResponse) {
-          conversationHistory.push({ role: 'assistant', content: fullResponse });
-          saveCurrentAskConversation();
+        if (request.fullResponse) {
+          request.displayHistory.push({ role: 'assistant', content: request.fullResponse });
+          if (request.kind === 'send') {
+            upsertAskConversation(request.pageKey, request.systemMessage, request.displayHistory);
+          } else {
+            setSummarySession(request.tabId, request.systemMessage, request.displayHistory);
+          }
         }
         showBanner(msg, 'error');
         currentPort = null;
@@ -668,28 +731,37 @@ async function streamChat(userMessage, screenshotBase64 = null) {
       if (request?.cancelled) return;
       if (msg.type === 'TOKEN') {
         resetTimer(); // stay alive as long as tokens keep arriving
-        fullResponse += msg.token;
-        container.innerHTML = renderMarkdown(fullResponse);
-        // Re-add cursor
-        const cursor = document.createElement('span');
-        cursor.className = 'cursor';
-        container.appendChild(cursor);
-        chatArea.scrollTop = chatArea.scrollHeight;
+        request.fullResponse += msg.token;
+        if (requestOwnsVisibleContext(request) && request.streamingNode) {
+          request.streamingNode.innerHTML = renderMarkdown(request.fullResponse);
+          const cursor = document.createElement('span');
+          cursor.className = 'cursor';
+          request.streamingNode.appendChild(cursor);
+          chatArea.scrollTop = chatArea.scrollHeight;
+        }
       } else if (msg.type === 'DONE') {
         clearTimeout(inactivityTimer);
-        container.innerHTML = renderMarkdown(fullResponse);
-        conversationHistory.push({ role: 'assistant', content: fullResponse });
-        saveCurrentAskConversation();
+        request.displayHistory.push({ role: 'assistant', content: request.fullResponse });
+        if (request.kind === 'send') {
+          upsertAskConversation(request.pageKey, request.systemMessage, request.displayHistory);
+        } else {
+          setSummarySession(request.tabId, request.systemMessage, request.displayHistory);
+        }
+        if (requestOwnsVisibleContext(request) && request.streamingNode) {
+          request.streamingNode.innerHTML = renderMarkdown(request.fullResponse);
+        }
         currentPort = null;
         finishRequest(request);
         resolve({ cancelled: false });
       } else if (msg.type === 'ERROR') {
         clearTimeout(inactivityTimer);
-        if (!fullResponse) {
-          container.innerHTML = `<span class="error-text">${escHtml(msg.error)}</span>`;
-          container.classList.add('error-msg');
-        } else {
-          container.innerHTML = renderMarkdown(fullResponse);
+        if (requestOwnsVisibleContext(request) && request.streamingNode) {
+          if (!request.fullResponse) {
+            request.streamingNode.innerHTML = `<span class="error-text">${escHtml(msg.error)}</span>`;
+            request.streamingNode.classList.add('error-msg');
+          } else {
+            request.streamingNode.innerHTML = renderMarkdown(request.fullResponse);
+          }
         }
         showBanner(msg.error, 'error');
         currentPort = null;
@@ -706,7 +778,9 @@ async function streamChat(userMessage, screenshotBase64 = null) {
         return;
       }
       if (isStreaming) {
-        if (fullResponse) container.innerHTML = renderMarkdown(fullResponse);
+        if (requestOwnsVisibleContext(request) && request.streamingNode && request.fullResponse) {
+          request.streamingNode.innerHTML = renderMarkdown(request.fullResponse);
+        }
         currentPort = null;
         finishRequest(request);
         resolve({ cancelled: false });
@@ -848,7 +922,12 @@ async function handleSummarize() {
   if (isStreaming) return;
 
   await updateActivePageKey();
-  const request = beginRequest('summarize');
+  const request = beginRequest('summarize', {
+    tabId: activeTabId,
+    pageKey: activePageKey,
+    baseHistory: [],
+    displayHistory: [{ role: 'user', content: 'Summarize this page' }]
+  });
   clearChat();
   setMode('summarize');
 
@@ -858,9 +937,13 @@ async function handleSummarize() {
     const pageData = await getPageData();
     if (!isActiveRequest(request)) return;
     systemMessage = buildSystemMessage(pageData);
+    request.systemMessage = systemMessage;
+    setSummarySession(activeTabId, systemMessage, request.displayHistory);
 
     loadingMsg.remove();
-    addMessage('user', 'Summarize this page');
+    if (requestOwnsVisibleContext(request)) {
+      addMessage('user', 'Summarize this page');
+    }
 
     const screenshotBase64 = await getScreenshotBase64(true);
     if (!isActiveRequest(request)) return;
@@ -902,7 +985,15 @@ async function handleSend(forceNewScreenshot = false, includeSearch = false) {
   const text = userInput.value.trim();
   if (!text || isStreaming) return;
 
-  const request = beginRequest('send');
+  const baseHistory = cloneHistory(conversationHistory);
+  const displayHistory = [...baseHistory, { role: 'user', content: text }];
+  const request = beginRequest('send', {
+    tabId: activeTabId,
+    pageKey: activePageKey,
+    systemMessage,
+    baseHistory,
+    displayHistory
+  });
   userInput.value = '';
   userInput.style.height = 'auto';
   addMessage('user', text);
@@ -915,7 +1006,9 @@ async function handleSend(forceNewScreenshot = false, includeSearch = false) {
     queryLoadingMsg.remove();
     if (!isActiveRequest(request)) return;
 
-    addSearchBadge(searchQuery);
+    if (requestOwnsVisibleContext(request)) {
+      addSearchBadge(searchQuery);
+    }
 
     const searchLoadingMsg = addLoadingMessage('Searching the web');
     const searchResults = await performSearch(searchQuery);
@@ -1238,6 +1331,7 @@ Promise.all([loadSettings(), loadPageConversations()])
   .then(async () => {
     updateScreenshotButtonVisibility();
     await updateActivePageKey();
+    await syncVisibleConversationToActivePage();
   })
   .catch((e) => {
     console.error('Initialization failed:', e);
