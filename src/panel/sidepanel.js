@@ -19,6 +19,8 @@ const DEFAULT_ENDPOINTS = {
 };
 
 const CLOUD_PROVIDERS = ['openai', 'claude'];
+const PAGE_CONVERSATIONS_KEY = 'pageConversations';
+const MAX_PAGE_CONVERSATIONS = 10;
 
 // State
 let conversationHistory = [];
@@ -32,6 +34,9 @@ let savedModels = {}; // { ollama: "llama3", openai: "gpt-4o", ... }
 let braveApiKey = '';
 let loadedFile = null; // { name, content }
 let requestTimeout = 120; // seconds
+let activePageKey = null;
+let pageConversations = {};
+let activeRequest = null;
 
 // DOM elements
 const settingsBtn = document.getElementById('settings-btn');
@@ -49,6 +54,7 @@ const braveKeyInput = document.getElementById('brave-key-input');
 const braveKeyGroup = document.querySelector('.brave-key-group');
 const summarizeBtn = document.getElementById('summarize-btn');
 const askBtn = document.getElementById('ask-btn');
+const cancelBtn = document.getElementById('cancel-btn');
 const statusBanner = document.getElementById('status-banner');
 const chatArea = document.getElementById('chat-area');
 const welcomeState = document.getElementById('welcome-state');
@@ -228,6 +234,14 @@ function hideBanner() {
 
 // --- Chat ---
 
+function resetChatUI() {
+  chatArea.innerHTML = '';
+  if (welcomeState) {
+    welcomeState.style.display = '';
+    chatArea.appendChild(welcomeState);
+  }
+}
+
 function addMessage(role, text, isMarkdown = false) {
   hideWelcome();
   const div = document.createElement('div');
@@ -272,15 +286,19 @@ function hideWelcome() {
 }
 
 function clearChat(resetContext = true) {
-  chatArea.innerHTML = '';
-  if (welcomeState) {
-    welcomeState.style.display = '';
-    chatArea.appendChild(welcomeState);
-  }
+  resetChatUI();
   conversationHistory = [];
   if (resetContext) {
     systemMessage = '';
     cachedScreenshot = null;
+  }
+}
+
+function renderConversation(history) {
+  resetChatUI();
+  conversationHistory = history.map(msg => ({ ...msg }));
+  for (const msg of conversationHistory) {
+    addMessage(msg.role, msg.content, msg.role === 'assistant');
   }
 }
 
@@ -301,17 +319,214 @@ function setStreaming(streaming) {
   sendBtn.disabled = streaming;
   searchSendBtn.disabled = streaming;
   screenshotSendBtn.disabled = streaming;
+  cancelBtn.classList.toggle('hidden', !streaming);
+  cancelBtn.disabled = !streaming;
 }
 
 function updateScreenshotButtonVisibility() {
   screenshotSendBtn.classList.toggle('hidden', !screenshotToggle.checked);
 }
 
+// --- Page Conversation State ---
+
+function getPageKey(url) {
+  if (!url) return null;
+  try {
+    const parsed = new URL(url);
+    parsed.hash = '';
+    return parsed.toString();
+  } catch {
+    return url;
+  }
+}
+
+function cloneHistory(history) {
+  return history.map(msg => ({ ...msg }));
+}
+
+function createViewSnapshot() {
+  return {
+    conversationHistory: cloneHistory(conversationHistory),
+    systemMessage,
+    currentMode,
+    pageKey: activePageKey
+  };
+}
+
+function restoreViewSnapshot(snapshot) {
+  systemMessage = snapshot.systemMessage || '';
+  currentMode = snapshot.currentMode || null;
+  activePageKey = snapshot.pageKey || activePageKey;
+
+  if (snapshot.conversationHistory.length > 0) {
+    renderConversation(snapshot.conversationHistory);
+  } else {
+    clearChat(false);
+  }
+
+  setMode(currentMode);
+
+  if (currentMode === 'ask' && snapshot.pageKey && snapshot.pageKey === activePageKey) {
+    if (!systemMessage && conversationHistory.length === 0) {
+      delete pageConversations[activePageKey];
+    } else {
+      pageConversations[activePageKey] = {
+        systemMessage,
+        history: cloneHistory(conversationHistory),
+        updatedAt: Date.now()
+      };
+    }
+    persistPageConversations().catch((e) => {
+      console.error('Failed to restore page conversation after cancel:', e);
+    });
+  }
+}
+
+function beginRequest(kind) {
+  const request = {
+    id: Date.now() + Math.random(),
+    kind,
+    snapshot: createViewSnapshot(),
+    cancelled: false,
+    finalized: false
+  };
+  activeRequest = request;
+  setStreaming(true);
+  return request;
+}
+
+function isActiveRequest(request) {
+  return !!request && activeRequest?.id === request.id && !request.cancelled;
+}
+
+function finishRequest(request) {
+  if (!request || activeRequest?.id !== request.id) return;
+  activeRequest = null;
+  setStreaming(false);
+}
+
+function cancelRequestUI(request) {
+  if (!request || request.finalized) return;
+  request.finalized = true;
+  restoreViewSnapshot(request.snapshot);
+  activeRequest = null;
+  setStreaming(false);
+  showBanner('Request cancelled.', 'warning');
+}
+
+function cancelActiveRequest() {
+  if (!activeRequest) return;
+  activeRequest.cancelled = true;
+  const request = activeRequest;
+
+  if (currentPort) {
+    try { currentPort.disconnect(); } catch (_) { }
+  }
+
+  cancelRequestUI(request);
+}
+
+function prunePageConversations() {
+  const pruned = Object.entries(pageConversations)
+    .sort(([, a], [, b]) => (b.updatedAt || 0) - (a.updatedAt || 0))
+    .slice(0, MAX_PAGE_CONVERSATIONS);
+  pageConversations = Object.fromEntries(pruned);
+}
+
+async function persistPageConversations() {
+  prunePageConversations();
+  await chrome.storage.local.set({ [PAGE_CONVERSATIONS_KEY]: pageConversations });
+}
+
+async function loadPageConversations() {
+  try {
+    const stored = await chrome.storage.local.get(PAGE_CONVERSATIONS_KEY);
+    pageConversations = stored[PAGE_CONVERSATIONS_KEY] || {};
+    prunePageConversations();
+  } catch (e) {
+    console.error('Failed to load page conversations:', e);
+    pageConversations = {};
+  }
+}
+
+function saveCurrentAskConversation() {
+  if (currentMode !== 'ask' || !activePageKey) return;
+
+  if (!systemMessage && conversationHistory.length === 0) {
+    delete pageConversations[activePageKey];
+  } else {
+    pageConversations[activePageKey] = {
+      systemMessage,
+      history: cloneHistory(conversationHistory),
+      updatedAt: Date.now()
+    };
+  }
+
+  persistPageConversations().catch((e) => {
+    console.error('Failed to save page conversations:', e);
+  });
+}
+
+function loadAskConversationForPage(pageKey) {
+  activePageKey = pageKey;
+  const entry = pageKey ? pageConversations[pageKey] : null;
+
+  if (entry) {
+    systemMessage = entry.systemMessage || '';
+    renderConversation(entry.history || []);
+    entry.updatedAt = Date.now();
+    persistPageConversations().catch((e) => {
+      console.error('Failed to update page conversation recency:', e);
+    });
+    return;
+  }
+
+  clearChat();
+}
+
+async function getActiveTab() {
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  return tab || null;
+}
+
+async function updateActivePageKey() {
+  const tab = await getActiveTab();
+  const nextPageKey = getPageKey(tab?.url);
+  const pageChanged = nextPageKey !== activePageKey;
+
+  if (pageChanged) {
+    cachedScreenshot = null;
+    activePageKey = nextPageKey;
+  }
+
+  return { tab, pageKey: nextPageKey, pageChanged };
+}
+
+async function syncVisibleConversationToActivePage() {
+  const { pageChanged, pageKey } = await updateActivePageKey();
+  if (!pageChanged) return;
+
+  hideBanner();
+
+  if (isStreaming && currentPort) {
+    try { currentPort.disconnect(); } catch (_) { }
+  }
+
+  if (currentMode === 'ask') {
+    loadAskConversationForPage(pageKey);
+    setMode('ask');
+    return;
+  }
+
+  clearChat();
+  setMode(null);
+}
+
 // --- Page Data ---
 
 async function getPageData() {
   try {
-    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    const tab = await getActiveTab();
     if (!tab) throw new Error('No active tab found');
 
     if (tab.url && (tab.url.startsWith('chrome://') || tab.url.startsWith('chrome-extension://') ||
@@ -335,7 +550,7 @@ async function getPageData() {
 
 async function captureScreenshot() {
   try {
-    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    const tab = await getActiveTab();
     const resp = await chrome.runtime.sendMessage({ type: 'CAPTURE_SCREENSHOT' });
     if (!resp || !resp.success) return null;
     cachedScreenshot = { base64: resp.base64, tabId: tab?.id, url: tab?.url };
@@ -350,7 +565,7 @@ async function getScreenshotBase64(forceNew = false) {
   if (!screenshotToggle.checked) return null;
   if (forceNew || !cachedScreenshot) return await captureScreenshot();
   try {
-    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    const tab = await getActiveTab();
     if (tab && (tab.id !== cachedScreenshot.tabId || tab.url !== cachedScreenshot.url)) {
       return await captureScreenshot();
     }
@@ -387,14 +602,15 @@ function buildSystemMessage(pageData) {
 }
 
 async function streamChat(userMessage, screenshotBase64 = null) {
+  const request = activeRequest;
   const settings = getSettings();
 
   if (!settings.model) {
+    finishRequest(request);
     showBanner('Please select a model in settings.', 'warning');
     return;
   }
 
-  setStreaming(true);
   hideBanner();
 
   const messages = [
@@ -409,6 +625,7 @@ async function streamChat(userMessage, screenshotBase64 = null) {
   }
 
   conversationHistory.push({ role: 'user', content: userMessage });
+  saveCurrentAskConversation();
 
   const { container, textSpan } = createStreamingMessage();
   let fullResponse = '';
@@ -423,6 +640,10 @@ async function streamChat(userMessage, screenshotBase64 = null) {
     const resetTimer = () => {
       clearTimeout(inactivityTimer);
       inactivityTimer = setTimeout(() => {
+        if (request?.cancelled) {
+          resolve({ cancelled: true });
+          return;
+        }
         const msg = `No response for ${requestTimeout}s. Check that your model is running.`;
         const cursor = container.querySelector('.cursor');
         if (cursor) cursor.remove();
@@ -430,10 +651,13 @@ async function streamChat(userMessage, screenshotBase64 = null) {
           container.innerHTML = `<span class="error-text">${escHtml(msg)}</span>`;
           container.classList.add('error-msg');
         }
-        if (fullResponse) conversationHistory.push({ role: 'assistant', content: fullResponse });
+        if (fullResponse) {
+          conversationHistory.push({ role: 'assistant', content: fullResponse });
+          saveCurrentAskConversation();
+        }
         showBanner(msg, 'error');
-        setStreaming(false);
         currentPort = null;
+        finishRequest(request);
         try { port.disconnect(); } catch (_) { }
         resolve();
       }, requestTimeout * 1000);
@@ -441,6 +665,7 @@ async function streamChat(userMessage, screenshotBase64 = null) {
     resetTimer();
 
     port.onMessage.addListener((msg) => {
+      if (request?.cancelled) return;
       if (msg.type === 'TOKEN') {
         resetTimer(); // stay alive as long as tokens keep arriving
         fullResponse += msg.token;
@@ -454,9 +679,10 @@ async function streamChat(userMessage, screenshotBase64 = null) {
         clearTimeout(inactivityTimer);
         container.innerHTML = renderMarkdown(fullResponse);
         conversationHistory.push({ role: 'assistant', content: fullResponse });
-        setStreaming(false);
+        saveCurrentAskConversation();
         currentPort = null;
-        resolve();
+        finishRequest(request);
+        resolve({ cancelled: false });
       } else if (msg.type === 'ERROR') {
         clearTimeout(inactivityTimer);
         if (!fullResponse) {
@@ -466,19 +692,24 @@ async function streamChat(userMessage, screenshotBase64 = null) {
           container.innerHTML = renderMarkdown(fullResponse);
         }
         showBanner(msg.error, 'error');
-        setStreaming(false);
         currentPort = null;
-        resolve();
+        finishRequest(request);
+        resolve({ cancelled: false });
       }
     });
 
     port.onDisconnect.addListener(() => {
       clearTimeout(inactivityTimer);
+      if (request?.cancelled) {
+        currentPort = null;
+        resolve({ cancelled: true });
+        return;
+      }
       if (isStreaming) {
         if (fullResponse) container.innerHTML = renderMarkdown(fullResponse);
-        setStreaming(false);
         currentPort = null;
-        resolve();
+        finishRequest(request);
+        resolve({ cancelled: false });
       }
     });
 
@@ -497,20 +728,43 @@ async function streamChat(userMessage, screenshotBase64 = null) {
 
 async function callLLMOnce(messages) {
   const settings = getSettings();
-  if (!settings.model) return null;
+  const request = activeRequest;
+  if (!settings.model) {
+    finishRequest(request);
+    return null;
+  }
   return new Promise((resolve) => {
     const port = chrome.runtime.connect({ name: 'llm-stream' });
+    currentPort = port;
     let result = '';
     const timer = setTimeout(() => {
       try { port.disconnect(); } catch (_) { }
+      currentPort = null;
       resolve(null); // fall back gracefully on timeout
     }, requestTimeout * 1000);
     port.onMessage.addListener((msg) => {
       if (msg.type === 'TOKEN') result += msg.token;
-      else if (msg.type === 'DONE') { clearTimeout(timer); port.disconnect(); resolve(result.trim()); }
-      else if (msg.type === 'ERROR') { clearTimeout(timer); port.disconnect(); resolve(null); }
+      else if (msg.type === 'DONE') {
+        clearTimeout(timer);
+        currentPort = null;
+        port.disconnect();
+        resolve(result.trim());
+      } else if (msg.type === 'ERROR') {
+        clearTimeout(timer);
+        currentPort = null;
+        port.disconnect();
+        resolve(null);
+      }
     });
-    port.onDisconnect.addListener(() => { clearTimeout(timer); resolve(result.trim() || null); });
+    port.onDisconnect.addListener(() => {
+      clearTimeout(timer);
+      currentPort = null;
+      if (request?.cancelled) {
+        resolve(null);
+        return;
+      }
+      resolve(result.trim() || null);
+    });
     port.postMessage({
       type: 'CHAT_REQUEST',
       provider: settings.provider,
@@ -591,6 +845,10 @@ function formatSearchResults(results) {
 // --- Actions ---
 
 async function handleSummarize() {
+  if (isStreaming) return;
+
+  await updateActivePageKey();
+  const request = beginRequest('summarize');
   clearChat();
   setMode('summarize');
 
@@ -598,31 +856,38 @@ async function handleSummarize() {
 
   try {
     const pageData = await getPageData();
+    if (!isActiveRequest(request)) return;
     systemMessage = buildSystemMessage(pageData);
 
     loadingMsg.remove();
     addMessage('user', 'Summarize this page');
 
     const screenshotBase64 = await getScreenshotBase64(true);
+    if (!isActiveRequest(request)) return;
 
-    await streamChat(
+    const result = await streamChat(
       'Please provide a concise summary of this web page. Highlight the key points and main topics covered.',
       screenshotBase64
     );
-
-    setMode('ask');
+    if (result?.cancelled) return;
   } catch (e) {
     loadingMsg.remove();
+    finishRequest(request);
     showBanner(e.message, 'error');
   }
 }
 
 async function handleAsk() {
+  await updateActivePageKey();
+  loadAskConversationForPage(activePageKey);
+  setMode('ask');
+
   if (!systemMessage) {
     const loadingMsg = addLoadingMessage('Extracting page content');
     try {
       const pageData = await getPageData();
       systemMessage = buildSystemMessage(pageData);
+      saveCurrentAskConversation();
       loadingMsg.remove();
     } catch (e) {
       loadingMsg.remove();
@@ -631,14 +896,13 @@ async function handleAsk() {
     }
   }
   await getScreenshotBase64(true);
-  clearChat(false);
-  setMode('ask');
 }
 
 async function handleSend(forceNewScreenshot = false, includeSearch = false) {
   const text = userInput.value.trim();
   if (!text || isStreaming) return;
 
+  const request = beginRequest('send');
   userInput.value = '';
   userInput.style.height = 'auto';
   addMessage('user', text);
@@ -649,12 +913,14 @@ async function handleSend(forceNewScreenshot = false, includeSearch = false) {
     const queryLoadingMsg = addLoadingMessage('Crafting search query');
     const searchQuery = await generateSearchQuery(text);
     queryLoadingMsg.remove();
+    if (!isActiveRequest(request)) return;
 
     addSearchBadge(searchQuery);
 
     const searchLoadingMsg = addLoadingMessage('Searching the web');
     const searchResults = await performSearch(searchQuery);
     searchLoadingMsg.remove();
+    if (!isActiveRequest(request)) return;
 
     const formatted = formatSearchResults(searchResults);
     if (formatted) {
@@ -665,7 +931,15 @@ async function handleSend(forceNewScreenshot = false, includeSearch = false) {
   }
 
   const screenshotBase64 = await getScreenshotBase64(forceNewScreenshot);
-  await streamChat(messageText, screenshotBase64);
+  if (!isActiveRequest(request)) return;
+
+  try {
+    const result = await streamChat(messageText, screenshotBase64);
+    if (result?.cancelled) return;
+  } catch (e) {
+    finishRequest(request);
+    showBanner(e.message || 'Request failed.', 'error');
+  }
 }
 
 // --- File Attachment ---
@@ -921,6 +1195,7 @@ refreshModelsBtn.addEventListener('click', fetchModels);
 
 summarizeBtn.addEventListener('click', handleSummarize);
 askBtn.addEventListener('click', handleAsk);
+cancelBtn.addEventListener('click', cancelActiveRequest);
 sendBtn.addEventListener('click', () => handleSend(false, false));
 searchSendBtn.addEventListener('click', () => handleSend(false, true));
 screenshotSendBtn.addEventListener('click', () => handleSend(true, false));
@@ -945,7 +1220,25 @@ userInput.addEventListener('input', () => {
 });
 
 // Clear error banner when switching tabs
-chrome.tabs.onActivated.addListener(() => hideBanner());
+chrome.tabs.onActivated.addListener(() => {
+  syncVisibleConversationToActivePage().catch((e) => {
+    console.error('Failed to sync active tab conversation:', e);
+  });
+});
+
+chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+  if (!tab.active || (!changeInfo.url && changeInfo.status !== 'complete')) return;
+  syncVisibleConversationToActivePage().catch((e) => {
+    console.error('Failed to sync updated tab conversation:', e);
+  });
+});
 
 // Init
-loadSettings().then(() => updateScreenshotButtonVisibility());
+Promise.all([loadSettings(), loadPageConversations()])
+  .then(async () => {
+    updateScreenshotButtonVisibility();
+    await updateActivePageKey();
+  })
+  .catch((e) => {
+    console.error('Initialization failed:', e);
+  });

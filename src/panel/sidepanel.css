@@ -766,6 +766,22 @@ body {
   color: var(--accent-light);
 }
 
+.action-btn.cancel {
+  background: #3a1722;
+  color: #ffd8df;
+  border: 2px solid rgba(248, 113, 113, 0.28);
+}
+
+.action-btn.cancel:hover:not(:disabled) {
+  background: #4a1c2b;
+  border-color: rgba(248, 113, 113, 0.45);
+  color: #fff1f4;
+}
+
+.action-btn.hidden {
+  display: none;
+}
+
 /* ===== INPUT AREA ===== */
 
 .input-area {

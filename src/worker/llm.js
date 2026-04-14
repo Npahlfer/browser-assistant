@@ -1,4 +1,4 @@
-export async function streamOllama(port, endpoint, model, messages) {
+export async function streamOllama(port, endpoint, model, messages, signal) {
   const ollamaMessages = messages.map(m => {
     const msg = { role: m.role, content: m.content };
     if (m.image) {
@@ -10,7 +10,8 @@ export async function streamOllama(port, endpoint, model, messages) {
   const resp = await fetch(`${endpoint}/api/chat`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ model, messages: ollamaMessages, stream: true })
+    body: JSON.stringify({ model, messages: ollamaMessages, stream: true }),
+    signal
   });
 
   if (!resp.ok) {
@@ -64,7 +65,7 @@ export async function streamOllama(port, endpoint, model, messages) {
   port.postMessage({ type: 'DONE' });
 }
 
-export async function streamOpenAICompat(port, endpoint, apiKey, model, messages) {
+export async function streamOpenAICompat(port, endpoint, apiKey, model, messages, signal) {
   const openaiMessages = messages.map(m => {
     if (m.image) {
       return {
@@ -86,7 +87,8 @@ export async function streamOpenAICompat(port, endpoint, apiKey, model, messages
   const resp = await fetch(`${endpoint}/v1/chat/completions`, {
     method: 'POST',
     headers,
-    body: JSON.stringify({ model, messages: openaiMessages, stream: true })
+    body: JSON.stringify({ model, messages: openaiMessages, stream: true }),
+    signal
   });
 
   if (!resp.ok) {
@@ -109,7 +111,7 @@ export async function streamOpenAICompat(port, endpoint, apiKey, model, messages
   port.postMessage({ type: 'DONE' });
 }
 
-export async function streamClaude(port, endpoint, apiKey, model, messages) {
+export async function streamClaude(port, endpoint, apiKey, model, messages, signal) {
   // Separate system message from conversation
   let systemContent = '';
   const claudeMessages = [];
@@ -154,7 +156,8 @@ export async function streamClaude(port, endpoint, apiKey, model, messages) {
       'anthropic-version': '2023-06-01',
       'anthropic-dangerous-direct-browser-access': 'true'
     },
-    body: JSON.stringify(body)
+    body: JSON.stringify(body),
+    signal
   });
 
   if (!resp.ok) {

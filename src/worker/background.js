@@ -283,29 +283,34 @@ chrome.runtime.onConnect.addListener((port) => {
   if (port.name !== 'llm-stream') return;
 
   let disconnected = false;
-  port.onDisconnect.addListener(() => { disconnected = true; });
+  let abortController = null;
+  port.onDisconnect.addListener(() => {
+    disconnected = true;
+    if (abortController) abortController.abort();
+  });
 
   port.onMessage.addListener((msg) => {
     if (msg.type !== 'CHAT_REQUEST') return;
 
     const { provider, endpoint, apiKey, model, messages } = msg;
+    abortController = new AbortController();
 
     const run = async () => {
       switch (provider) {
         case 'ollama':
-          await streamOllama(port, endpoint, model, messages);
+          await streamOllama(port, endpoint, model, messages, abortController.signal);
           break;
         case 'lmstudio':
-          await streamOpenAICompat(port, endpoint, null, model, messages);
+          await streamOpenAICompat(port, endpoint, null, model, messages, abortController.signal);
           break;
         case 'llamacpp':
-          await streamOpenAICompat(port, endpoint, null, model, messages);
+          await streamOpenAICompat(port, endpoint, null, model, messages, abortController.signal);
           break;
         case 'openai':
-          await streamOpenAICompat(port, endpoint, apiKey, model, messages);
+          await streamOpenAICompat(port, endpoint, apiKey, model, messages, abortController.signal);
           break;
         case 'claude':
-          await streamClaude(port, endpoint, apiKey, model, messages);
+          await streamClaude(port, endpoint, apiKey, model, messages, abortController.signal);
           break;
         default:
           port.postMessage({ type: 'ERROR', error: `Unknown provider: ${provider}` });
@@ -313,6 +318,7 @@ chrome.runtime.onConnect.addListener((port) => {
     };
 
     run().catch((err) => {
+      if (err?.name === 'AbortError') return;
       if (!disconnected) {
         try {
           port.postMessage({ type: 'ERROR', error: err.message || 'Stream failed' });
