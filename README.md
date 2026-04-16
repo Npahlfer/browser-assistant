@@ -31,7 +31,7 @@ Local providers run entirely on your machine - no data is sent to any external s
 
 ### From the Chrome Web Store
 
-SOON
+[Chrome extension here](https://chromewebstore.google.com/detail/browser-assistant/mcfhffimihllopbdjhkclkdebkakoepb)
 
 ### Manual installation (developer mode)
 
